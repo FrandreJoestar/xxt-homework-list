@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 
 import '../models/homework.dart';
+import '../utils/reminder_text.dart';
 
 class CalendarAddResult {
   final int added;
@@ -10,7 +11,7 @@ class CalendarAddResult {
   const CalendarAddResult({this.added = 0, this.skipped = 0, this.failed = 0});
 }
 
-/// 调用 Android 原生日历：申请读写日历权限，并在截止时间前 2 小时提醒。
+/// 调用 Android 原生日历：申请读写日历权限，并按指定提前量设置提醒。
 class CalendarService {
   static const MethodChannel _channel = MethodChannel(
     'com.frandre.homework_list/calendar',
@@ -27,10 +28,12 @@ class CalendarService {
     }
   }
 
-  /// 为作业创建日程：事件发生在截止时间，提醒时间为截止前 2 小时。
+  /// 为作业创建日程：事件发生在截止时间，[reminderMinutes] 为提前提醒分钟数。
   static Future<CalendarAddResult> addHomeworkEvents(
-    List<Homework> items,
-  ) async {
+    List<Homework> items, {
+    int reminderMinutes = 120,
+  }) async {
+    final minutes = reminderMinutes > 0 ? reminderMinutes : 120;
     final events = <Map<String, Object>>[];
     for (final hw in items) {
       final deadline = hw.deadline;
@@ -40,11 +43,12 @@ class CalendarService {
         'description':
             '课程：${hw.course}\n'
             '截止时间：${_format(deadline)}\n'
-            '提醒：截止前 2 小时',
+            '提醒：截止前 ${formatReminderLead(minutes)}',
         'startMillis': deadline.millisecondsSinceEpoch,
         'endMillis': deadline
             .add(const Duration(minutes: 15))
             .millisecondsSinceEpoch,
+        'remindMinutes': minutes,
       });
     }
     if (events.isEmpty) return const CalendarAddResult();

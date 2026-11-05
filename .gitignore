@@ -47,3 +47,7 @@ app.*.map.json
 # 本地参考资料（非本项目源码）
 /xuexitong-cli-main/
 /xuexitong-cli-main.zip
+
+# Kotlin 构建缓存
+/android/.kotlin/
+.kotlin/

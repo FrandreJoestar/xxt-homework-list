@@ -17,7 +17,7 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val CHANNEL = "com.frandre.homework_list/calendar"
         private const val PERMISSION_REQUEST_CODE = 9101
-        private const val REMIND_MINUTES = 120
+        private const val DEFAULT_REMIND_MINUTES = 120
         private const val ACCOUNT_NAME = "学习通作业本"
     }
 
@@ -103,12 +103,22 @@ class MainActivity : FlutterActivity() {
                     val start = (event["startMillis"] as? Number)?.toLong() ?: continue
                     val end = (event["endMillis"] as? Number)?.toLong()
                         ?: (start + 15 * 60 * 1000)
+                    val remindMinutes = (event["remindMinutes"] as? Number)?.toInt()
+                        ?: DEFAULT_REMIND_MINUTES
 
                     if (eventExists(calendarId, title, start)) {
                         skipped++
                         continue
                     }
-                    if (insertEvent(calendarId, title, description, start, end)) {
+                    if (insertEvent(
+                            calendarId,
+                            title,
+                            description,
+                            start,
+                            end,
+                            remindMinutes
+                        )
+                    ) {
                         added++
                     } else {
                         failed++
@@ -203,8 +213,10 @@ class MainActivity : FlutterActivity() {
         title: String,
         description: String,
         startMillis: Long,
-        endMillis: Long
+        endMillis: Long,
+        remindMinutes: Int
     ): Boolean {
+        val safeRemindMinutes = if (remindMinutes > 0) remindMinutes else DEFAULT_REMIND_MINUTES
         val values = ContentValues().apply {
             put(Events.CALENDAR_ID, calendarId)
             put(Events.TITLE, title)
@@ -220,7 +232,7 @@ class MainActivity : FlutterActivity() {
 
         val reminder = ContentValues().apply {
             put(Reminders.EVENT_ID, eventId)
-            put(Reminders.MINUTES, REMIND_MINUTES)
+            put(Reminders.MINUTES, safeRemindMinutes)
             put(Reminders.METHOD, Reminders.METHOD_ALERT)
         }
         contentResolver.insert(Reminders.CONTENT_URI, reminder)

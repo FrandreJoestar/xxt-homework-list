@@ -9,6 +9,8 @@ import '../services/chaoxing_client.dart';
 import '../services/homework_cache.dart';
 import '../services/session_store.dart';
 import '../theme.dart';
+import '../utils/reminder_text.dart';
+import '../widgets/reminder_picker.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key, required this.onLoggedOut});
@@ -38,6 +40,7 @@ class _HomeScreenState extends State<HomeScreen>
   bool _refreshing = false;
   bool _importing = false;
   bool _selectionMode = false;
+  Duration _reminderLead = const Duration(hours: 2);
   int _lastTabIndex = 0;
   String? _progress;
   String? _error;
@@ -339,6 +342,10 @@ class _HomeScreenState extends State<HomeScreen>
       return;
     }
 
+    final lead = await showReminderPicker(context, initial: _reminderLead);
+    if (lead == null || !mounted) return;
+    _reminderLead = lead;
+
     final granted = await CalendarService.ensurePermission();
     if (!granted) {
       _showMessage('未获得日历权限，请在系统设置中允许后重试');
@@ -348,11 +355,16 @@ class _HomeScreenState extends State<HomeScreen>
 
     setState(() => _importing = true);
     try {
-      final result = await CalendarService.addHomeworkEvents(importable);
+      final result = await CalendarService.addHomeworkEvents(
+        importable,
+        reminderMinutes: lead.inMinutes,
+      );
       final parts = <String>['已添加 ${result.added} 个日程'];
       if (result.skipped > 0) parts.add('${result.skipped} 个已存在');
       if (result.failed > 0) parts.add('${result.failed} 个写入失败');
-      _showMessage('${parts.join('，')}；提醒时间为截止前 2 小时');
+      _showMessage(
+        '${parts.join('，')}；将在截止前 ${formatReminderLead(lead.inMinutes)}提醒',
+      );
       if (mounted) _exitSelection();
     } catch (e) {
       _showMessage('导入失败：$e');
@@ -659,7 +671,7 @@ class _HomeScreenState extends State<HomeScreen>
     final hint = selected.isEmpty
         ? '点击作业卡片进行选择'
         : importable == selected.length
-        ? '已选 ${selected.length} 项 · 将在截止前 2 小时提醒'
+        ? '已选 ${selected.length} 项 · 导入时可设置提前提醒时间'
         : '已选 ${selected.length} 项，其中 $importable 项可导入（其余无可用的未来截止时间）';
 
     return Container(

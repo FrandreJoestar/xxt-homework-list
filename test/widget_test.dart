@@ -1,7 +1,10 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:xuexitong_homework/models/homework.dart';
 import 'package:xuexitong_homework/services/homework_cache.dart';
+import 'package:xuexitong_homework/utils/reminder_text.dart';
+import 'package:xuexitong_homework/widgets/reminder_picker.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -93,5 +96,41 @@ void main() {
       savedAt: DateTime.now().subtract(const Duration(days: 1)),
     );
     expect(entry.isFromToday, isFalse);
+  });
+
+  test('提前提醒时间文案格式化', () {
+    expect(formatReminderLead(0), '不提醒');
+    expect(formatReminderLead(45), '45 分钟');
+    expect(formatReminderLead(120), '2 小时');
+    expect(formatReminderLead(1500), '1 天 1 小时');
+  });
+
+  testWidgets('提前提醒选择器默认返回 2 小时', (tester) async {
+    Duration? picked;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => Scaffold(
+            body: Center(
+              child: ElevatedButton(
+                onPressed: () async {
+                  picked = await showReminderPicker(context);
+                },
+                child: const Text('打开选择器'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('打开选择器'));
+    await tester.pumpAndSettle();
+    expect(find.text('提前提醒'), findsOneWidget);
+    expect(find.text('将在截止前 2 小时提醒'), findsOneWidget);
+
+    await tester.tap(find.text('确定导入'));
+    await tester.pumpAndSettle();
+    expect(picked, const Duration(hours: 2));
   });
 }
