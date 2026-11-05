@@ -37,6 +37,7 @@
 | 震动反馈 | 拖动滚轮改变时间数字时发出轻微震动 |
 | 去重 | 相同标题与截止时间的日程自动跳过，重复导入不会产生重复日程 |
 | 缓存 | 每天自动获取一次，当天再次打开直接读取本地缓存；手动刷新才重新请求 |
+| 更新 | 启动时检查 GitHub Release 的 version.json，有新版本可一键跳转浏览器下载 |
 | 提示 | 列表顶部展示「点击看详情、长按多选」的操作提示 |
 | 隐私 | 凭据、Cookie 与作业缓存仅保存在本机；退出登录会清空 |
 
@@ -60,6 +61,9 @@
 - Flutter 3.44 / Dart 3.12
 - `shared_preferences`：凭据、Cookie、作业缓存
 - `encrypt`：学习通登录参数的 AES-128-CBC 加密
+- `package_info_plus`：读取当前安装版本
+- `url_launcher`：打开更新下载页
+- GitHub Actions：打 tag 自动构建并发布 APK 与 version.json
 - Android 原生 `CalendarContract`：日历写入与提醒
 - Android 包名：`com.frandre.homework_list`
 - 应用显示名：学习通作业本
@@ -113,6 +117,7 @@ lib/
     homework_cache.dart       作业列表本地缓存（按天判定）
     calendar_service.dart     日历原生通道封装
     session_store.dart        凭据与 Cookie 本地存储
+    update_service.dart       版本检查、加速源与下载地址解析
   screens/
     login_screen.dart         登录页
     home_screen.dart          作业列表、分类滑动切换、详情弹窗、多选与日历导入
@@ -120,9 +125,12 @@ lib/
     reminder_text.dart        提前提醒时间文案格式化
   widgets/
     reminder_picker.dart      天 / 小时 / 分钟滚轮选择器
+    update_dialog.dart        新版本提示弹窗
 android/
   app/src/main/kotlin/com/frandre/homework_list/MainActivity.kt
                               日历权限申请与日程写入
+.github/
+  workflows/release.yml       打 tag 自动构建并发布 APK + version.json
 ```
 
 ## 数据与缓存
@@ -134,6 +142,80 @@ android/
 - 刷新过程中可随时取消：已发出的请求结果会被丢弃，现有列表保持不变。
 - 刷新失败时保留原有缓存，不会清空列表。
 - 作业是否截止根据当前时间动态判断，无需重新请求即可正确归档。
+
+## 发布与自动更新
+
+### 自动发布（推荐）
+
+Release 不需要手动上传。推送一个 `v*` tag 即可触发 GitHub Actions 构建并发布：
+
+```bash
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+工作流 [`.github/workflows/release.yml`](.github/workflows/release.yml) 会自动：
+
+1. 构建 release APK；
+2. 上传安装包 `xxt-homework-list.apk`；
+3. 生成并上传 `version.json`；
+4. 创建或更新对应的 GitHub Release。
+
+也可以在仓库 Actions 页面手动运行 `Release APK`，填写版本号。
+
+### 正式签名（首次配置）
+
+为了让后续版本能覆盖安装，需要在仓库 `Settings → Secrets and variables → Actions` 添加：
+
+| Secret | 说明 |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | keystore 文件的 Base64 文本 |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore 密码 |
+| `ANDROID_KEY_ALIAS` | key 别名 |
+| `ANDROID_KEY_PASSWORD` | key 密码 |
+
+生成 keystore 并转为 Base64：
+
+```bash
+keytool -genkey -v -keystore release.keystore -alias xxt -keyalg RSA -keysize 2048 -validity 10000
+base64 -w0 release.keystore
+```
+
+未配置时工作流会退回 debug 签名，但不同构建之间无法覆盖安装。
+
+### 手动命令发布（可选）
+
+已安装并登录 GitHub CLI 时，也可以直接命令发布：
+
+```bash
+flutter build apk --release --build-name=1.2.0 --build-number=2
+gh release create v1.2.0 build/app/outputs/flutter-apk/app-release.apk \
+  --title "学习通作业本 v1.2.0" --notes "更新说明"
+```
+
+手动发布时还需自行生成并上传 `version.json`。
+
+### version.json 与更新检查
+
+应用启动时会读取 Release 的 `latest/download/version.json`：
+
+```json
+{
+  "version": "1.2.0",
+  "build": 2,
+  "apkUrl": "https://github.com/FrandreJoestar/xxt-homework-list/releases/latest/download/xxt-homework-list.apk",
+  "publishedAt": "2026-11-05T00:00:00Z"
+}
+```
+
+检查顺序为直连加常用加速代理：
+
+- 直连：`https://github.com/...`
+- `https://gh-proxy.com/`
+- `https://ghproxy.net/`
+- `https://ghfast.top/`
+
+任一源返回更高版本时弹窗提示；点击「去更新」会使用该源的加速地址打开浏览器下载 APK。全部源失败时静默忽略，不影响正常使用。
 
 ## 常见问题
 
@@ -152,6 +234,10 @@ android/
 **点击作业卡片没有反应？**
 
 详情需要联网读取作业详情页。若课程未开放作业详情、登录状态失效或网络异常，弹窗内会显示错误提示，此时仍可依据列表中的截止时间添加到日历。
+
+**为什么启动时没有提示更新？**
+
+应用仅在成功读取到更高的 `version.json` 版本时弹窗。若 GitHub 与所列加速源都无法访问，或当前已是最新版本，则不会提示；可稍后重新打开应用或前往 Releases 页面手动查看。
 
 **导入日历后没有收到提醒？**
 
@@ -176,6 +262,9 @@ android/
 - 长按拖拽多选时，反向滑动会取消经过卡片的选中状态
 - 自动滚动改为逐帧平滑滚动，并缓存排序结果，减少拖选卡顿
 - 列表顶部新增「点击看详情、长按多选」操作提示
+- 启动时自动检查新版本，支持直连与 gh-proxy 等加速源，并弹窗跳转浏览器下载
+- 新增 GitHub Actions 自动构建并发布 APK 与 version.json
+- 支持通过 Secrets 配置正式签名，保证后续版本可覆盖安装
 
 ### v1.1.0
 

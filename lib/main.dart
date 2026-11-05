@@ -4,7 +4,9 @@ import 'screens/home_screen.dart';
 import 'screens/login_screen.dart';
 import 'services/homework_cache.dart';
 import 'services/session_store.dart';
+import 'services/update_service.dart';
 import 'theme.dart';
+import 'widgets/update_dialog.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -20,6 +22,7 @@ class XuexitongApp extends StatefulWidget {
 
 class _XuexitongAppState extends State<XuexitongApp> {
   final SessionStore _store = SessionStore();
+  final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
   bool _booting = true;
   bool _loggedIn = false;
 
@@ -27,6 +30,7 @@ class _XuexitongAppState extends State<XuexitongApp> {
   void initState() {
     super.initState();
     _boot();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _checkForUpdate());
   }
 
   Future<void> _boot() async {
@@ -36,6 +40,15 @@ class _XuexitongAppState extends State<XuexitongApp> {
       _loggedIn = hasCredentials;
       _booting = false;
     });
+  }
+
+  /// 每次启动静默检查 GitHub Release 上的 version.json，有新版本时弹窗。
+  Future<void> _checkForUpdate() async {
+    final update = await UpdateService.checkForUpdate();
+    if (!mounted || update == null) return;
+    final context = _navigatorKey.currentContext;
+    if (context == null || !context.mounted) return;
+    await showUpdateDialog(context, update);
   }
 
   void _onLoggedIn() {
@@ -54,6 +67,7 @@ class _XuexitongAppState extends State<XuexitongApp> {
     return MaterialApp(
       title: '学习通作业本',
       debugShowCheckedModeBanner: false,
+      navigatorKey: _navigatorKey,
       theme: buildAppTheme(),
       home: _booting
           ? const _BootScreen()

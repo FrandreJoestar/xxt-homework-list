@@ -1,0 +1,121 @@
+name: Release APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号（如 1.2.0）；留空则读取 tag 或 pubspec.yaml'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          INPUT="${{ inputs.version }}"
+          if [ -n "$INPUT" ]; then
+            VERSION="${INPUT#v}"
+          elif [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(sed -n 's/^version: *\([0-9][0-9.]*\).*/\1/p' pubspec.yaml | head -n1)"
+          fi
+          BUILD="$(sed -n 's/^version: *[^+]*+\([0-9][0-9]*\).*/\1/p' pubspec.yaml | head -n1)"
+          if [ -z "$BUILD" ]; then BUILD="1"; fi
+          if [ -z "$VERSION" ]; then
+            echo "无法解析版本号，请在 workflow_dispatch 中传入 version"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "构建版本: v$VERSION ($BUILD)"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.1'
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Configure release signing
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::warning::未配置 ANDROID_KEYSTORE_BASE64，将使用 debug 签名，不同构建之间无法覆盖安装"
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/release.keystore
+          cat > android/key.properties <<EOF
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=release.keystore
+          EOF
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      - name: Build APK
+        run: |
+          flutter build apk --release \
+            --build-name=${{ steps.version.outputs.version }} \
+            --build-number=${{ steps.version.outputs.build }}
+
+      - name: Prepare release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp build/app/outputs/flutter-apk/app-release.apk xxt-homework-list.apk
+          PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          cat > version.json <<EOF
+          {
+            "version": "${{ steps.version.outputs.version }}",
+            "build": ${{ steps.version.outputs.build }},
+            "apkUrl": "https://github.com/${{ github.repository }}/releases/latest/download/xxt-homework-list.apk",
+            "publishedAt": "$PUBLISHED_AT"
+          }
+          EOF
+          cat version.json
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: 学习通作业本 v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            xxt-homework-list.apk
+            version.json
