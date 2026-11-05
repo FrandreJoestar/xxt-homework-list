@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
 import '../models/homework.dart';
@@ -21,18 +22,17 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen>
-    with SingleTickerProviderStateMixin {
+class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   final ChaoxingClient _client = ChaoxingClient(SessionStore());
   final HomeworkCache _cache = HomeworkCache();
-  final ScrollController _scrollController = ScrollController();
+  final Map<HomeworkFilter, ScrollController> _scrollControllers = {};
   late final TabController _tabController = TabController(
     length: HomeworkFilter.values.length,
     vsync: this,
   );
 
   final Set<String> _selectedIds = {};
-  final Map<String, GlobalKey> _cardKeys = {};
+  final Map<HomeworkFilter, Map<String, GlobalKey>> _cardKeys = {};
 
   List<Homework> _items = [];
   List<String> _failedCourses = [];
@@ -46,24 +46,48 @@ class _HomeScreenState extends State<HomeScreen>
   String? _error;
   bool _needLogin = false;
 
+  int _loadEpoch = 0;
+  Completer<void>? _refreshCancel;
+
   bool _dragging = false;
-  Timer? _autoScrollTimer;
-  double _autoScrollDelta = 0;
+  String? _dragLastCardId;
   Offset? _lastDragPosition;
+  late final Ticker _autoScrollTicker;
+  double _autoScrollSpeed = 0;
+  Duration _lastTickElapsed = Duration.zero;
+
+  final Map<HomeworkFilter, List<Homework>> _sortedCache = {};
+  List<Homework> _sortedSource = const [];
 
   HomeworkFilter get _filter => HomeworkFilter.values[_tabController.index];
 
-  List<Homework> get _currentTabItems => sortedByFilter(_items, _filter);
+  List<Homework> get _currentTabItems => _sortedFor(_filter);
 
   List<Homework> get _selectedItems =>
       _items.where((h) => _selectedIds.contains(h.id)).toList();
 
-  GlobalKey _cardKeyFor(String id) =>
-      _cardKeys.putIfAbsent(id, () => GlobalKey());
+  /// 按分类缓存排序结果，避免长按拖拽自动滚动时每帧重复排序。
+  List<Homework> _sortedFor(HomeworkFilter filter) {
+    if (!identical(_sortedSource, _items)) {
+      _sortedCache.clear();
+      _sortedSource = _items;
+    }
+    return _sortedCache.putIfAbsent(
+      filter,
+      () => sortedByFilter(_items, filter),
+    );
+  }
+
+  ScrollController _scrollControllerFor(HomeworkFilter filter) =>
+      _scrollControllers.putIfAbsent(filter, () => ScrollController());
+
+  GlobalKey _cardKeyFor(HomeworkFilter filter, String id) =>
+      (_cardKeys[filter] ??= {}).putIfAbsent(id, () => GlobalKey());
 
   @override
   void initState() {
     super.initState();
+    _autoScrollTicker = createTicker(_onAutoScrollTick);
     _lastTabIndex = _tabController.index;
     _tabController.addListener(_onTabChanged);
     _bootstrap();
@@ -87,7 +111,10 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void dispose() {
     _stopAutoScroll();
-    _scrollController.dispose();
+    _autoScrollTicker.dispose();
+    for (final controller in _scrollControllers.values) {
+      controller.dispose();
+    }
     _tabController.removeListener(_onTabChanged);
     _tabController.dispose();
     _client.dispose();
@@ -115,6 +142,9 @@ class _HomeScreenState extends State<HomeScreen>
       _selectedIds.clear();
       _stopDragSelection();
     }
+    final epoch = ++_loadEpoch;
+    final cancel = Completer<void>();
+    _refreshCancel = cancel;
     setState(() {
       _error = null;
       _needLogin = false;
@@ -124,15 +154,20 @@ class _HomeScreenState extends State<HomeScreen>
     });
 
     try {
-      final result = await _client.fetchAllHomework(
+      final fetch = _client.fetchAllHomework(
         onProgress: (done, total) {
-          if (!mounted) return;
+          if (!mounted || epoch != _loadEpoch) return;
           setState(() {
             _progress = total == 0 ? '正在读取课程…' : '正在读取课程 $done/$total';
           });
         },
       );
-      if (!mounted) return;
+      // 取消时让下拉刷新立刻收起，不再等待已发出的网络请求。
+      final result = await Future.any<HomeworkFetchResult?>([
+        fetch,
+        cancel.future.then((_) => null),
+      ]);
+      if (result == null || !mounted || epoch != _loadEpoch) return;
       setState(() {
         _items = result.items;
         _failedCourses = result.failedCourses;
@@ -142,7 +177,7 @@ class _HomeScreenState extends State<HomeScreen>
       });
       _cache.save(result).ignore();
     } on ChaoxingException catch (e) {
-      if (!mounted) return;
+      if (!mounted || epoch != _loadEpoch) return;
       setState(() {
         _error = e.message;
         _needLogin = e.needLogin;
@@ -152,7 +187,7 @@ class _HomeScreenState extends State<HomeScreen>
       });
       if (_items.isNotEmpty) _showMessage(e.message);
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || epoch != _loadEpoch) return;
       setState(() {
         _error = '加载失败：$e';
         _loading = false;
@@ -160,7 +195,22 @@ class _HomeScreenState extends State<HomeScreen>
         _progress = null;
       });
       if (_items.isNotEmpty) _showMessage('刷新失败：$e');
+    } finally {
+      if (identical(_refreshCancel, cancel)) _refreshCancel = null;
     }
+  }
+
+  /// 取消正在进行的刷新：立即收起进度提示，后台请求结果会被丢弃。
+  void _cancelRefresh() {
+    if (!_refreshing || _items.isEmpty) return;
+    _loadEpoch++;
+    _refreshCancel?.complete();
+    _refreshCancel = null;
+    setState(() {
+      _refreshing = false;
+      _progress = null;
+    });
+    _showMessage('已取消刷新');
   }
 
   int _countOf(HomeworkFilter filter) =>
@@ -178,9 +228,13 @@ class _HomeScreenState extends State<HomeScreen>
   // ------------------------------------------------------------ 多选
 
   void _handleTap(Offset globalPosition) {
-    if (!_selectionMode) return;
     final homework = _cardAt(globalPosition);
-    if (homework != null) _toggleSelection(homework);
+    if (homework == null) return;
+    if (_selectionMode) {
+      _toggleSelection(homework);
+    } else {
+      _openDetail(homework);
+    }
   }
 
   void _handleLongPressStart(Offset globalPosition) {
@@ -190,8 +244,10 @@ class _HomeScreenState extends State<HomeScreen>
   }
 
   Homework? _cardAt(Offset globalPosition) {
+    final keys = _cardKeys[_filter];
+    if (keys == null) return null;
     for (final homework in _currentTabItems) {
-      final context = _cardKeys[homework.id]?.currentContext;
+      final context = keys[homework.id]?.currentContext;
       final renderObject = context?.findRenderObject();
       if (renderObject is! RenderBox || !renderObject.attached) continue;
       final rect = renderObject.localToGlobal(Offset.zero) & renderObject.size;
@@ -247,86 +303,156 @@ class _HomeScreenState extends State<HomeScreen>
       _selectedIds.add(homework.id);
       _dragging = true;
     });
+    _dragLastCardId = homework.id;
   }
 
   void _updateDragSelection(Offset globalPosition) {
     if (!_dragging) return;
     _lastDragPosition = globalPosition;
-    _selectCardsAt(globalPosition);
+    _toggleCardAt(globalPosition);
     _updateAutoScroll(globalPosition);
   }
 
-  void _selectCardsAt(Offset globalPosition) {
-    final toAdd = <String>[];
-    for (final homework in _currentTabItems) {
-      if (_selectedIds.contains(homework.id)) continue;
-      final context = _cardKeys[homework.id]?.currentContext;
-      final renderObject = context?.findRenderObject();
-      if (renderObject is! RenderBox || !renderObject.attached) continue;
-      final rect = renderObject.localToGlobal(Offset.zero) & renderObject.size;
-      if (rect.contains(globalPosition)) {
-        toAdd.add(homework.id);
+  /// 手指经过某张卡片时切换它的选中状态：
+  /// 顺着拖为选中，往回拖就会取消选中（同一张卡片只切换一次）。
+  void _toggleCardAt(Offset globalPosition) {
+    final homework = _cardAt(globalPosition);
+    if (homework == null) {
+      _dragLastCardId = null;
+      return;
+    }
+    if (homework.id == _dragLastCardId) return;
+    _dragLastCardId = homework.id;
+    setState(() {
+      _selectionMode = true;
+      if (!_selectedIds.remove(homework.id)) {
+        _selectedIds.add(homework.id);
       }
-    }
-    if (toAdd.isNotEmpty) {
-      setState(() => _selectedIds.addAll(toAdd));
-    }
+    });
   }
 
   /// 拖到列表顶部/底部附近时自动滚动，便于不松手连续多选。
   void _updateAutoScroll(Offset globalPosition) {
-    if (!_scrollController.hasClients) return;
+    final controller = _scrollControllerFor(_filter);
+    if (!controller.hasClients) return;
     final media = MediaQuery.of(context);
     final topEdge = media.padding.top + kToolbarHeight + 46 + 16;
     final bottomEdge = media.size.height - media.padding.bottom - 150;
 
-    double delta = 0;
+    double speed = 0;
     if (globalPosition.dy < topEdge) {
-      delta = -14;
+      speed = -_edgeSpeed((topEdge - globalPosition.dy) / 64);
     } else if (globalPosition.dy > bottomEdge) {
-      delta = 14;
+      speed = _edgeSpeed((globalPosition.dy - bottomEdge) / 64);
     }
-    if (delta == 0) {
+    if (speed == 0) {
       _stopAutoScroll();
       return;
     }
-    if (_autoScrollTimer != null && delta == _autoScrollDelta) return;
+    _autoScrollSpeed = speed;
+    if (_autoScrollTicker.isActive) return;
+    _lastTickElapsed = Duration.zero;
+    _autoScrollTicker.start();
+  }
 
-    _stopAutoScroll();
-    _autoScrollDelta = delta;
-    _autoScrollTimer = Timer.periodic(const Duration(milliseconds: 40), (
-      timer,
-    ) {
-      if (!mounted || !_dragging || !_scrollController.hasClients) {
-        timer.cancel();
-        _autoScrollTimer = null;
-        return;
-      }
-      final position = _scrollController.position;
-      final next = (position.pixels + _autoScrollDelta)
-          .clamp(position.minScrollExtent, position.maxScrollExtent)
-          .toDouble();
-      if (next == position.pixels) {
-        timer.cancel();
-        _autoScrollTimer = null;
-        return;
-      }
-      _scrollController.jumpTo(next);
-      final lastPosition = _lastDragPosition;
-      if (lastPosition != null) _selectCardsAt(lastPosition);
-    });
+  /// 越靠近边缘滚得越快，速度限制在 160~640 像素/秒。
+  double _edgeSpeed(double ratio) {
+    final t = ratio.clamp(0.0, 1.0);
+    return 160 + 480 * t;
+  }
+
+  /// 每帧按时间增量滚动，避免定时器跳帧造成的卡顿。
+  void _onAutoScrollTick(Duration elapsed) {
+    if (!mounted || !_dragging) {
+      _stopAutoScroll();
+      return;
+    }
+    final controller = _scrollControllerFor(_filter);
+    if (!controller.hasClients) {
+      _stopAutoScroll();
+      return;
+    }
+    final dt = ((elapsed - _lastTickElapsed).inMicroseconds / 1000000).clamp(
+      0.0,
+      0.05,
+    );
+    _lastTickElapsed = elapsed;
+    if (dt == 0) return;
+
+    final position = controller.position;
+    final next = (position.pixels + _autoScrollSpeed * dt)
+        .clamp(position.minScrollExtent, position.maxScrollExtent)
+        .toDouble();
+    if (next == position.pixels) {
+      _autoScrollTicker.stop();
+      return;
+    }
+    controller.jumpTo(next);
+    final lastPosition = _lastDragPosition;
+    if (lastPosition != null) _toggleCardAt(lastPosition);
   }
 
   void _stopDragSelection() {
     _dragging = false;
+    _dragLastCardId = null;
     _lastDragPosition = null;
     _stopAutoScroll();
   }
 
   void _stopAutoScroll() {
-    _autoScrollTimer?.cancel();
-    _autoScrollTimer = null;
-    _autoScrollDelta = 0;
+    _autoScrollSpeed = 0;
+    if (_autoScrollTicker.isActive) _autoScrollTicker.stop();
+  }
+
+  // ------------------------------------------------------------ 作业详情
+
+  Future<void> _openDetail(Homework homework) async {
+    final detail = await showDialog<HomeworkDetail>(
+      context: context,
+      builder: (context) => _HomeworkDetailDialog(
+        homework: homework,
+        load: () => _client.fetchHomeworkDetail(homework),
+      ),
+    );
+    if (detail == null || !mounted) return;
+
+    final deadline = detail.deadline ?? homework.deadline;
+    if (deadline == null) return;
+    await _addSingleToCalendar(homework, deadline);
+  }
+
+  Future<void> _addSingleToCalendar(
+    Homework homework,
+    DateTime deadline,
+  ) async {
+    if (_importing) return;
+    final lead = await showReminderPicker(context, initial: _reminderLead);
+    if (lead == null || !mounted) return;
+    _reminderLead = lead;
+
+    final granted = await CalendarService.ensurePermission();
+    if (!granted) {
+      _showMessage('未获得日历权限，请在系统设置中允许后重试');
+      return;
+    }
+    if (!mounted) return;
+
+    setState(() => _importing = true);
+    try {
+      final result = await CalendarService.addHomeworkEvents([
+        homework.copyWithDeadline(deadline),
+      ], reminderMinutes: lead.inMinutes);
+      final parts = <String>['已添加 ${result.added} 个日程'];
+      if (result.skipped > 0) parts.add('${result.skipped} 个已存在');
+      if (result.failed > 0) parts.add('${result.failed} 个写入失败');
+      _showMessage(
+        '${parts.join('，')}；将在截止前 ${formatReminderLead(lead.inMinutes)}提醒',
+      );
+    } catch (e) {
+      _showMessage('导入失败：$e');
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
   }
 
   // ------------------------------------------------------------ 导入日历
@@ -393,14 +519,22 @@ class _HomeScreenState extends State<HomeScreen>
                 ]
               : [
                   IconButton(
-                    tooltip: '刷新',
-                    onPressed: _refreshing ? null : _load,
+                    tooltip: _refreshing
+                        ? (_items.isEmpty ? '正在刷新' : '取消刷新')
+                        : '刷新',
+                    onPressed: _refreshing
+                        ? (_items.isEmpty ? null : _cancelRefresh)
+                        : _load,
                     icon: _refreshing
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
+                        ? (_items.isEmpty
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.close_rounded, size: 22))
                         : const Icon(Icons.refresh_rounded, size: 22),
                   ),
                   PopupMenuButton<String>(
@@ -483,7 +617,17 @@ class _HomeScreenState extends State<HomeScreen>
       return _buildError();
     }
 
-    final items = sortedByFilter(_items, _filter);
+    // 用 TabBarView 承载各分类：左右滑动时页面跟随手指移动并带过渡动画。
+    return TabBarView(
+      controller: _tabController,
+      children: [
+        for (final filter in HomeworkFilter.values) _buildTabPage(filter),
+      ],
+    );
+  }
+
+  Widget _buildTabPage(HomeworkFilter filter) {
+    final items = _sortedFor(filter);
     return Stack(
       children: [
         RefreshIndicator(
@@ -497,17 +641,19 @@ class _HomeScreenState extends State<HomeScreen>
                 _updateDragSelection(details.globalPosition),
             onLongPressEnd: (_) => _stopDragSelection(),
             child: ListView(
-              controller: _scrollController,
+              key: PageStorageKey<String>('homework-${filter.name}'),
+              controller: _scrollControllerFor(filter),
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
               children: [
                 if (_failedCourses.isNotEmpty) _buildFailedBanner(),
+                if (items.isNotEmpty) _buildUsageHint(),
                 if (items.isEmpty)
-                  _buildEmpty()
+                  _buildEmpty(filter)
                 else
                   for (final homework in items)
                     _HomeworkCard(
-                      key: _cardKeyFor(homework.id),
+                      key: _cardKeyFor(filter, homework.id),
                       homework: homework,
                       selectionMode: _selectionMode,
                       selected: _selectedIds.contains(homework.id),
@@ -517,11 +663,35 @@ class _HomeScreenState extends State<HomeScreen>
           ),
         ),
         if (_refreshing)
-          const Positioned(
+          Positioned(
             top: 0,
             left: 0,
             right: 0,
-            child: LinearProgressIndicator(minHeight: 2),
+            child: Container(
+              color: AppColors.background.withValues(alpha: 0.92),
+              child: Row(
+                children: [
+                  const Expanded(child: LinearProgressIndicator(minHeight: 2)),
+                  if (_items.isNotEmpty)
+                    InkWell(
+                      onTap: _cancelRefresh,
+                      child: const Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 6,
+                        ),
+                        child: Text(
+                          '取消刷新',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            color: AppColors.muted,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
           ),
       ],
     );
@@ -578,6 +748,34 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
+  /// 列表顶部的一句使用提示：点击看详情、长按多选导入日历。
+  Widget _buildUsageHint() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: AppColors.accent.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: const Row(
+        children: [
+          Icon(Icons.touch_app_outlined, size: 14, color: AppColors.accent),
+          SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              '点击卡片查看作业详情，长按卡片可多选并导入日历',
+              style: TextStyle(
+                fontSize: 11.5,
+                height: 1.4,
+                color: AppColors.muted,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildFailedBanner() {
     final names = _failedCourses.take(3).join('、');
     final more = _failedCourses.length > 3
@@ -614,8 +812,8 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
-  Widget _buildEmpty() {
-    final (String title, String hint) = switch (_filter) {
+  Widget _buildEmpty(HomeworkFilter filter) {
+    final (String title, String hint) = switch (filter) {
       HomeworkFilter.all => ('还没有作业', '下拉可刷新'),
       HomeworkFilter.pending => ('没有待交作业', '当前作业都已完成或已截止'),
       HomeworkFilter.submitted => ('暂无已交作业', '已截止的作业不会出现在这里'),
@@ -911,5 +1109,312 @@ class _HomeworkCard extends StatelessWidget {
     if (diff.inHours < 24) return AppColors.danger;
     if (diff.inDays < 3) return AppColors.pending;
     return AppColors.muted;
+  }
+}
+
+/// 点击作业卡片后弹出的详情卡片：展示题量 / 满分 / 作答时间 / 得分，
+/// 底部提供“添加到日历”与“取消”。关闭时返回 [HomeworkDetail]（取消为 null）。
+class _HomeworkDetailDialog extends StatefulWidget {
+  const _HomeworkDetailDialog({required this.homework, required this.load});
+
+  final Homework homework;
+  final Future<HomeworkDetail> Function() load;
+
+  @override
+  State<_HomeworkDetailDialog> createState() => _HomeworkDetailDialogState();
+}
+
+class _HomeworkDetailDialogState extends State<_HomeworkDetailDialog> {
+  HomeworkDetail? _detail;
+  bool _loading = true;
+  String? _error;
+
+  DateTime? get _deadline => _detail?.deadline ?? widget.homework.deadline;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetch();
+  }
+
+  Future<void> _fetch() async {
+    try {
+      final detail = await widget.load();
+      if (!mounted) return;
+      setState(() {
+        _detail = detail;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e is ChaoxingException ? e.message : '读取详情失败：$e';
+        _loading = false;
+      });
+    }
+  }
+
+  void _confirm() {
+    final detail =
+        _detail ??
+        HomeworkDetail(
+          title: widget.homework.title,
+          status: widget.homework.status,
+          deadline: widget.homework.deadline,
+        );
+    Navigator.of(context).pop(detail);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final homework = widget.homework;
+    final detail = _detail;
+    final deadline = _deadline;
+    final canAdd = deadline != null && deadline.isAfter(DateTime.now());
+
+    return Dialog(
+      backgroundColor: AppColors.surface,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 26, vertical: 32),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 440),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                '作业详情',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 0.6,
+                  color: AppColors.muted,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                detail?.title ?? homework.title,
+                style: const TextStyle(
+                  fontSize: 17,
+                  height: 1.35,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.ink,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  const Icon(
+                    Icons.menu_book_outlined,
+                    size: 14,
+                    color: AppColors.muted,
+                  ),
+                  const SizedBox(width: 5),
+                  Expanded(
+                    child: Text(
+                      homework.course,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        color: AppColors.muted,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  _buildStatusChip(),
+                ],
+              ),
+              const SizedBox(height: 14),
+              const Divider(height: 1, color: AppColors.line),
+              const SizedBox(height: 14),
+              if (_loading)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      SizedBox(width: 10),
+                      Text(
+                        '正在读取作业详情…',
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          color: AppColors.muted,
+                        ),
+                      ),
+                    ],
+                  ),
+                )
+              else ...[
+                if (_error != null) _buildError(),
+                _infoRow(
+                  '题量',
+                  detail?.questionCount == null
+                      ? '—'
+                      : '${detail!.questionCount}',
+                ),
+                _infoRow(
+                  '满分',
+                  detail?.fullScore == null ? '—' : '${detail!.fullScore}',
+                ),
+                _infoRow('作答时间', _timeRange(deadline)),
+                _infoRow(
+                  '得分',
+                  (detail?.score ?? '').isEmpty ? '—' : '${detail!.score} 分',
+                ),
+              ],
+              const SizedBox(height: 6),
+              if (!_loading && !canAdd)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Text(
+                    deadline == null ? '该作业没有可用的截止时间，无法添加到日历' : '作业已截止，无法添加到日历',
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      color: AppColors.muted,
+                    ),
+                  ),
+                ),
+              Row(
+                children: [
+                  Expanded(
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      style: OutlinedButton.styleFrom(
+                        minimumSize: const Size.fromHeight(48),
+                        foregroundColor: AppColors.ink,
+                        side: const BorderSide(color: AppColors.line),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                      ),
+                      child: const Text('取消'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    flex: 2,
+                    child: FilledButton.icon(
+                      onPressed: canAdd ? _confirm : null,
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size.fromHeight(48),
+                      ),
+                      icon: const Icon(Icons.event_available_rounded, size: 18),
+                      label: const Text('添加到日历'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatusChip() {
+    final homework = widget.homework;
+    final color = homework.isExpired
+        ? AppColors.muted
+        : homework.isSubmitted
+        ? AppColors.success
+        : AppColors.pending;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        homework.displayStatus,
+        style: TextStyle(
+          fontSize: 11.5,
+          fontWeight: FontWeight.w600,
+          color: color,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildError() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.danger.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(
+            Icons.error_outline_rounded,
+            size: 15,
+            color: AppColors.danger,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              _error!,
+              style: const TextStyle(
+                fontSize: 12,
+                height: 1.45,
+                color: AppColors.danger,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _infoRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 66,
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 12.5, color: AppColors.muted),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 13.5,
+                height: 1.4,
+                fontWeight: FontWeight.w500,
+                color: AppColors.ink,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _timeRange(DateTime? deadline) {
+    final start = _detail?.startTime;
+    if (start == null && deadline == null) return '未知';
+    final startText = start == null ? '?' : _formatTime(start);
+    final endText = deadline == null ? '?' : _formatTime(deadline);
+    final expired = deadline != null && deadline.isBefore(DateTime.now());
+    return '$startText 至 $endText${expired ? '（已截止）' : ''}';
+  }
+
+  String _formatTime(DateTime time) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(time.month)}-${two(time.day)} '
+        '${two(time.hour)}:${two(time.minute)}';
   }
 }

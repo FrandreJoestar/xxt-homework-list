@@ -238,6 +238,21 @@ class ChaoxingClient {
     return _parseDeadline(result.body, DateTime.now());
   }
 
+  /// 单份作业详情：题量 / 满分 / 作答起止时间 / 得分。
+  ///
+  /// 详情 URL 来自作业列表条目的 data 属性（work/task 页，自带签名），
+  /// 直接复用即可，无需重新拼 enc。
+  Future<HomeworkDetail> fetchHomeworkDetail(Homework homework) async {
+    if (homework.url.isEmpty) {
+      throw const ChaoxingException('该作业没有详情链接（可能未开放查看）');
+    }
+    final result = await _getAuthed(Uri.parse(homework.url));
+    if (_isLoginPage(result)) {
+      throw const ChaoxingException('登录状态已失效，请重新登录', needLogin: true);
+    }
+    return _parseHomeworkDetail(result.body, homework, DateTime.now());
+  }
+
   /// 扫描所有课程的作业（含已提交 / 已截止），并补全截止时间。
   Future<HomeworkFetchResult> fetchAllHomework({
     void Function(int done, int total)? onProgress,
@@ -514,6 +529,77 @@ class ChaoxingClient {
       );
     }
     return null;
+  }
+
+  /// 解析作业详情页（mooc-ans/mooc2/work/task），规则参考 CLI 的
+  /// parse_homework_detail：页面 stripTags 后形如
+  /// “作业详情 实验4 题量: 1 满分: 100 作答时间: ... 智能分析 68 分”。
+  HomeworkDetail _parseHomeworkDetail(
+    String html,
+    Homework homework,
+    DateTime now,
+  ) {
+    final text = _stripTags(html);
+
+    // 标题夹在最后一个“作业详情”与“题量”之间（<title> 也含该词）。
+    var title = homework.title;
+    final countIndex = text.indexOf('题量');
+    if (countIndex >= 0) {
+      final head = text.substring(0, countIndex);
+      final mark = head.lastIndexOf('作业详情');
+      if (mark >= 0) {
+        final parsed = head.substring(mark + 4).trim();
+        if (parsed.isNotEmpty) title = parsed;
+      }
+    }
+
+    final countMatch = RegExp(r'题量[:：]\s*(\d+)').firstMatch(text);
+    final fullScoreMatch = RegExp(r'满分[:：]\s*(\d+)').firstMatch(text);
+    final scoreMatch =
+        RegExp(r'智能分析\s*(\d+(?:\.\d+)?)\s*分').firstMatch(text) ??
+        RegExp(r'(?:得分|总评|成绩|批阅)[:：]?\s*(\d+(?:\.\d+)?)\s*分').firstMatch(text);
+
+    DateTime? startTime;
+    DateTime? deadline;
+    final span = RegExp(
+      r'作答时间[:：]\s*((?:\d{4}-)?\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2})'
+      r'\s*至\s*((?:\d{4}-)?\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2})',
+    ).firstMatch(text);
+    if (span != null) {
+      startTime = _parseDetailTime(span.group(1), now);
+      deadline = _parseDetailTime(span.group(2), now);
+    }
+    deadline ??= _parseDeadline(html, now);
+
+    return HomeworkDetail(
+      title: title,
+      status: homework.status,
+      questionCount: countMatch == null
+          ? null
+          : int.tryParse(countMatch.group(1)!),
+      fullScore: fullScoreMatch == null
+          ? null
+          : int.tryParse(fullScoreMatch.group(1)!),
+      startTime: startTime,
+      deadline: deadline,
+      score: scoreMatch?.group(1) ?? '',
+    );
+  }
+
+  DateTime? _parseDetailTime(String? raw, DateTime now) {
+    if (raw == null) return null;
+    final match = RegExp(
+      r'(?:(\d{4})-)?(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{2})',
+    ).firstMatch(raw);
+    if (match == null) return null;
+    return _buildDate(
+      year: match.group(1),
+      month: match.group(2),
+      day: match.group(3),
+      hour: match.group(4),
+      minute: match.group(5),
+      today: now,
+    );
   }
 
   DateTime? _buildDate({

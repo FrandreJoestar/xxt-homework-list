@@ -98,6 +98,29 @@ class Homework {
   }
 }
 
+/// 单份作业详情（对应 CLI 的 get_homework_detail）。
+///
+/// 对应页面上“题量 / 满分 / 作答时间 / 得分”，解析不到的字段保持 null。
+class HomeworkDetail {
+  final String title;
+  final String status;
+  final int? questionCount;
+  final int? fullScore;
+  final DateTime? startTime;
+  final DateTime? deadline;
+  final String score;
+
+  const HomeworkDetail({
+    required this.title,
+    this.status = '',
+    this.questionCount,
+    this.fullScore,
+    this.startTime,
+    this.deadline,
+    this.score = '',
+  });
+}
+
 enum HomeworkFilter {
   all('全部'),
   pending('未交'),
