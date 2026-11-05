@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:ffi';
 
 import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
@@ -67,8 +68,8 @@ class UpdateService {
       if (version.isEmpty) continue;
 
       final build = (data['build'] as num?)?.toInt() ?? 0;
-      final apkUrl = (data['apkUrl'] as String?)?.trim() ?? '';
-      if (!apkUrl.startsWith('http')) continue;
+      final apkUrl = _selectApkUrl(data);
+      if (apkUrl == null) continue;
 
       final comparison = _compareVersion(version, info.version);
       // 拿到第一个有效结果就足够：版本不高于当前则无需继续尝试其他代理。
@@ -94,6 +95,33 @@ class UpdateService {
       if (response.statusCode != 200) return null;
       final decoded = jsonDecode(utf8.decode(response.bodyBytes));
       return decoded is Map<String, dynamic> ? decoded : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// 优先按当前设备 ABI 选择分包，找不到时回退到通用包 apkUrl。
+  static String? _selectApkUrl(Map<String, dynamic> data) {
+    final urls = data['apkUrls'];
+    final abi = _currentAbiKey();
+    if (urls is Map && abi != null) {
+      final candidate = urls[abi];
+      if (candidate is String && candidate.trim().startsWith('http')) {
+        return candidate.trim();
+      }
+    }
+    final fallback = (data['apkUrl'] as String?)?.trim() ?? '';
+    return fallback.startsWith('http') ? fallback : null;
+  }
+
+  static String? _currentAbiKey() {
+    try {
+      final abi = Abi.current();
+      if (abi == Abi.androidArm64) return 'arm64-v8a';
+      if (abi == Abi.androidArm) return 'armeabi-v7a';
+      if (abi == Abi.androidIA32) return 'x86';
+      if (abi == Abi.androidX64) return 'x86_64';
+      return null;
     } catch (_) {
       return null;
     }

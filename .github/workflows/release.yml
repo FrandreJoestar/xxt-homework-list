@@ -88,7 +88,15 @@ jobs:
       - name: Test
         run: flutter test
 
-      - name: Build APK
+      - name: Build split APKs
+        run: |
+          flutter build apk --release \
+            --build-name=${{ steps.version.outputs.version }} \
+            --build-number=${{ steps.version.outputs.build }} \
+            --split-per-abi \
+            --target-platform android-arm,android-arm64
+
+      - name: Build universal APK
         run: |
           flutter build apk --release \
             --build-name=${{ steps.version.outputs.version }} \
@@ -98,13 +106,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk xxt-homework-list-arm64-v8a.apk
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk xxt-homework-list-armeabi-v7a.apk
           cp build/app/outputs/flutter-apk/app-release.apk xxt-homework-list.apk
           PUBLISHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          REPO_URL="https://github.com/${{ github.repository }}/releases/latest/download"
           cat > version.json <<EOF
           {
             "version": "${{ steps.version.outputs.version }}",
             "build": ${{ steps.version.outputs.build }},
-            "apkUrl": "https://github.com/${{ github.repository }}/releases/latest/download/xxt-homework-list.apk",
+            "apkUrl": "$REPO_URL/xxt-homework-list.apk",
+            "apkUrls": {
+              "arm64-v8a": "$REPO_URL/xxt-homework-list-arm64-v8a.apk",
+              "armeabi-v7a": "$REPO_URL/xxt-homework-list-armeabi-v7a.apk"
+            },
             "publishedAt": "$PUBLISHED_AT"
           }
           EOF
@@ -118,4 +133,6 @@ jobs:
           generate_release_notes: true
           files: |
             xxt-homework-list.apk
+            xxt-homework-list-arm64-v8a.apk
+            xxt-homework-list-armeabi-v7a.apk
             version.json

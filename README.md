@@ -18,7 +18,7 @@
 
 学习通作业本会登录学习通账号，读取全部课程作业及截止时间，并按「全部 / 未交 / 已交 / 已截止」分类展示。点击作业卡片可查看题量、满分、作答时间与得分；长按卡片可多选，选择提前提醒时间后一键写入系统日历，在截止前收到提醒。
 
-当前版本：**v1.2.1**
+当前版本：**v1.2.2**
 
 ## 功能特性
 
@@ -37,7 +37,7 @@
 | 震动反馈 | 拖动滚轮改变时间数字时发出轻微震动 |
 | 去重 | 相同标题与截止时间的日程自动跳过，重复导入不会产生重复日程 |
 | 缓存 | 每天自动获取一次，当天再次打开直接读取本地缓存；手动刷新才重新请求 |
-| 更新 | 启动时检查 GitHub Release 的 version.json，有新版本可一键跳转浏览器下载 |
+| 更新 | 启动时检查 version.json，按设备架构自动选择 arm64-v8a / armeabi-v7a 安装包并跳转浏览器下载 |
 | 提示 | 列表顶部展示「点击看详情、长按多选」的操作提示 |
 | 隐私 | 凭据、Cookie 与作业缓存仅保存在本机；退出登录会清空 |
 
@@ -156,8 +156,8 @@ git push origin v1.2.0
 
 工作流 [`.github/workflows/release.yml`](.github/workflows/release.yml) 会自动：
 
-1. 构建 release APK；
-2. 上传安装包 `xxt-homework-list.apk`；
+1. 构建通用 APK 与按 ABI 拆分的 APK（arm64-v8a / armeabi-v7a）；
+2. 上传 `xxt-homework-list.apk`、`xxt-homework-list-arm64-v8a.apk`、`xxt-homework-list-armeabi-v7a.apk`；
 3. 生成并上传 `version.json`；
 4. 创建或更新对应的 GitHub Release。
 
@@ -201,12 +201,18 @@ gh release create v1.2.0 build/app/outputs/flutter-apk/app-release.apk \
 
 ```json
 {
-  "version": "1.2.0",
-  "build": 2,
+  "version": "1.2.2",
+  "build": 4,
   "apkUrl": "https://github.com/FrandreJoestar/xxt-homework-list/releases/latest/download/xxt-homework-list.apk",
+  "apkUrls": {
+    "arm64-v8a": "https://github.com/FrandreJoestar/xxt-homework-list/releases/latest/download/xxt-homework-list-arm64-v8a.apk",
+    "armeabi-v7a": "https://github.com/FrandreJoestar/xxt-homework-list/releases/latest/download/xxt-homework-list-armeabi-v7a.apk"
+  },
   "publishedAt": "2026-11-05T00:00:00Z"
 }
 ```
+
+新版本客户端会根据当前设备 ABI 从 `apkUrls` 选择对应分发包；旧版本或未匹配到 ABI 时回退到通用包 `apkUrl`。
 
 检查顺序为直连加常用加速代理：
 
@@ -252,6 +258,12 @@ gh release create v1.2.0 build/app/outputs/flutter-apk/app-release.apk \
 当前版本面向 Android，日历写入能力基于 Android `CalendarContract` 实现。
 
 ## 更新日志
+
+### v1.2.2
+
+- Release 改为按 ABI 分包：arm64-v8a 约 18 MB、armeabi-v7a 约 16 MB，同时保留通用包
+- 更新检查根据设备架构自动选择对应安装包，未匹配时回退通用包
+- `version.json` 新增 `apkUrls` 字段
 
 ### v1.2.1
 
