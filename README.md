@@ -20,7 +20,7 @@
 
 界面基于 [`flutter_miuix`](https://github.com/ChuxinNeko/flutter_miuix) 重写为 HyperOS 风格：底部悬浮分类 dock、列表滚动时顶栏与 dock 一起隐藏、详情卡片从被点击的卡片位置展开。
 
-当前版本：**v1.3.0**
+当前版本：**v1.3.1**
 
 ## 功能特性
 
@@ -130,6 +130,7 @@ lib/
   utils/
     reminder_text.dart        提前提醒时间文案格式化
   widgets/
+    card_morph_transition.dart 卡片拉伸式路由过渡（详情弹窗展开/收回）
     reminder_picker.dart      天 / 小时 / 分钟滚轮选择器
     update_dialog.dart        新版本提示弹窗
 android/
@@ -207,8 +208,8 @@ gh release create v1.2.0 build/app/outputs/flutter-apk/app-release.apk \
 
 ```json
 {
-  "version": "1.3.0",
-  "build": 5,
+  "version": "1.3.1",
+  "build": 6,
   "apkUrl": "https://github.com/FrandreJoestar/xxt-homework-list/releases/latest/download/xxt-homework-list.apk",
   "apkUrls": {
     "arm64-v8a": "https://github.com/FrandreJoestar/xxt-homework-list/releases/latest/download/xxt-homework-list-arm64-v8a.apk",
@@ -264,6 +265,11 @@ gh release create v1.2.0 build/app/outputs/flutter-apk/app-release.apk \
 当前版本面向 Android，日历写入能力基于 Android `CalendarContract` 实现。
 
 ## 更新日志
+
+### v1.3.1
+
+- 详情弹窗改为「卡片拉伸」过渡：从被点击卡片的矩形直接插值到面板矩形，四条边同时移动，面板内容按最终尺寸布局、逐步露出，不再缩放或重排文字；关闭时沿同一路径收回到卡片
+- 抽出可复用的 `CardMorphTransition` 组件，并补充对应组件测试
 
 ### v1.3.0
 

@@ -12,6 +12,7 @@ import '../services/chaoxing_client.dart';
 import '../services/homework_cache.dart';
 import '../services/session_store.dart';
 import '../utils/reminder_text.dart';
+import '../widgets/card_morph_transition.dart';
 import '../widgets/reminder_picker.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -483,7 +484,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
             load: () => _client.fetchHomeworkDetail(homework),
           ),
       transitionBuilder: (context, animation, secondaryAnimation, child) =>
-          _expandFrom(origin, animation, child),
+          CardMorphTransition(
+            origin: origin,
+            animation: animation,
+            child: child,
+          ),
     );
     if (detail == null || !mounted) return;
 
@@ -498,38 +503,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         ?.findRenderObject();
     if (renderObject is! RenderBox || !renderObject.attached) return null;
     return renderObject.localToGlobal(Offset.zero) & renderObject.size;
-  }
-
-  /// 详情弹窗从卡片位置纵向展开到屏幕中央，关闭时反向收回到卡片。
-  Widget _expandFrom(Rect? origin, Animation<double> animation, Widget child) {
-    final screenCenter = MediaQuery.sizeOf(context).center(Offset.zero);
-    final startY = origin?.center.dy ?? screenCenter.dy;
-    final curved = CurvedAnimation(
-      parent: animation,
-      curve: Curves.easeOutCubic,
-      reverseCurve: Curves.easeInCubic,
-    );
-    return AnimatedBuilder(
-      animation: curved,
-      child: child,
-      builder: (context, child) {
-        final t = curved.value;
-        return Stack(
-          alignment: Alignment.center,
-          children: [
-            Transform.translate(
-              offset: Offset(0, (startY - screenCenter.dy) * (1 - t)),
-              child: SizeTransition(
-                sizeFactor: curved,
-                axis: Axis.vertical,
-                alignment: Alignment.center,
-                child: FadeTransition(opacity: curved, child: child!),
-              ),
-            ),
-          ],
-        );
-      },
-    );
   }
 
   Future<void> _addSingleToCalendar(
@@ -1381,154 +1354,145 @@ class _HomeworkDetailDialogState extends State<_HomeworkDetailDialog> {
     final deadline = _deadline;
     final canAdd = deadline != null && deadline.isAfter(DateTime.now());
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 32),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 440),
-        child: Material(
-          color: theme.colors.background,
-          borderRadius: BorderRadius.circular(28),
-          clipBehavior: Clip.antiAlias,
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(22, 20, 22, 18),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
+    // 只返回面板本身，尺寸与居中由 _CardMorphTransition 负责。
+    return Material(
+      color: theme.colors.background,
+      borderRadius: BorderRadius.circular(28),
+      clipBehavior: Clip.antiAlias,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(22, 20, 22, 18),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            MiuixText(
+              '作业详情',
+              style: theme.textStyles.footnote2.copyWith(
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.6,
+              ),
+              color: theme.colors.primary,
+            ),
+            const SizedBox(height: 6),
+            MiuixText(
+              detail?.title ?? homework.title,
+              style: theme.textStyles.title4.copyWith(
+                height: 1.35,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
               children: [
-                MiuixText(
-                  '作业详情',
-                  style: theme.textStyles.footnote2.copyWith(
-                    fontWeight: FontWeight.w600,
-                    letterSpacing: 0.6,
-                  ),
-                  color: theme.colors.primary,
+                MiuixIcon(
+                  icon: Icons.menu_book_outlined,
+                  size: 14,
+                  tint: theme.colors.onSurfaceVariantSummary,
                 ),
-                const SizedBox(height: 6),
-                MiuixText(
-                  detail?.title ?? homework.title,
-                  style: theme.textStyles.title4.copyWith(
-                    height: 1.35,
-                    fontWeight: FontWeight.w700,
+                const SizedBox(width: 5),
+                Expanded(
+                  child: MiuixText(
+                    homework.course,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textStyles.footnote1,
+                    color: theme.colors.onSurfaceVariantSummary,
                   ),
                 ),
-                const SizedBox(height: 10),
-                Row(
+                const SizedBox(width: 8),
+                _buildStatusChip(theme),
+              ],
+            ),
+            const SizedBox(height: 14),
+            const MiuixHorizontalDivider(),
+            const SizedBox(height: 14),
+            if (_loading)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                child: Row(
                   children: [
-                    MiuixIcon(
-                      icon: Icons.menu_book_outlined,
-                      size: 14,
-                      tint: theme.colors.onSurfaceVariantSummary,
+                    const MiuixCircularProgressIndicator(
+                      size: 16,
+                      strokeWidth: 2,
                     ),
-                    const SizedBox(width: 5),
-                    Expanded(
-                      child: MiuixText(
-                        homework.course,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textStyles.footnote1,
-                        color: theme.colors.onSurfaceVariantSummary,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    _buildStatusChip(theme),
-                  ],
-                ),
-                const SizedBox(height: 14),
-                const MiuixHorizontalDivider(),
-                const SizedBox(height: 14),
-                if (_loading)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    child: Row(
-                      children: [
-                        const MiuixCircularProgressIndicator(
-                          size: 16,
-                          strokeWidth: 2,
-                        ),
-                        const SizedBox(width: 10),
-                        MiuixText(
-                          '正在读取作业详情…',
-                          style: theme.textStyles.footnote1,
-                          color: theme.colors.onSurfaceVariantSummary,
-                        ),
-                      ],
-                    ),
-                  )
-                else ...[
-                  if (_error != null) _buildError(theme),
-                  _infoRow(
-                    theme,
-                    '题量',
-                    detail?.questionCount == null
-                        ? '—'
-                        : '${detail!.questionCount}',
-                  ),
-                  _infoRow(
-                    theme,
-                    '满分',
-                    detail?.fullScore == null ? '—' : '${detail!.fullScore}',
-                  ),
-                  _infoRow(theme, '作答时间', _timeRange(deadline)),
-                  _infoRow(
-                    theme,
-                    '得分',
-                    (detail?.score ?? '').isEmpty ? '—' : '${detail!.score} 分',
-                  ),
-                ],
-                const SizedBox(height: 6),
-                if (!_loading && !canAdd)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 10),
-                    child: MiuixText(
-                      deadline == null
-                          ? '该作业没有可用的截止时间，无法添加到日历'
-                          : '作业已截止，无法添加到日历',
-                      style: theme.textStyles.footnote2,
+                    const SizedBox(width: 10),
+                    MiuixText(
+                      '正在读取作业详情…',
+                      style: theme.textStyles.footnote1,
                       color: theme.colors.onSurfaceVariantSummary,
                     ),
-                  ),
-                Row(
-                  children: [
-                    Expanded(
-                      child: SizedBox(
-                        width: double.infinity,
-                        child: MiuixTextButton(
-                          '取消',
-                          onPressed: () => Navigator.of(context).pop(),
-                          minHeight: 48,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      flex: 2,
-                      child: SizedBox(
-                        width: double.infinity,
-                        child: MiuixButton(
-                          onPressed: canAdd ? _confirm : null,
-                          colors: MiuixButtonDefaults.buttonColorsPrimary(
-                            context,
-                          ),
-                          minHeight: 48,
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: const [
-                              MiuixIcon(
-                                icon: Icons.event_available_rounded,
-                                size: 18,
-                              ),
-                              SizedBox(width: 6),
-                              MiuixText('添加到日历'),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
                   ],
+                ),
+              )
+            else ...[
+              if (_error != null) _buildError(theme),
+              _infoRow(
+                theme,
+                '题量',
+                detail?.questionCount == null
+                    ? '—'
+                    : '${detail!.questionCount}',
+              ),
+              _infoRow(
+                theme,
+                '满分',
+                detail?.fullScore == null ? '—' : '${detail!.fullScore}',
+              ),
+              _infoRow(theme, '作答时间', _timeRange(deadline)),
+              _infoRow(
+                theme,
+                '得分',
+                (detail?.score ?? '').isEmpty ? '—' : '${detail!.score} 分',
+              ),
+            ],
+            const SizedBox(height: 6),
+            if (!_loading && !canAdd)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: MiuixText(
+                  deadline == null ? '该作业没有可用的截止时间，无法添加到日历' : '作业已截止，无法添加到日历',
+                  style: theme.textStyles.footnote2,
+                  color: theme.colors.onSurfaceVariantSummary,
+                ),
+              ),
+            Row(
+              children: [
+                Expanded(
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: MiuixTextButton(
+                      '取消',
+                      onPressed: () => Navigator.of(context).pop(),
+                      minHeight: 48,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: MiuixButton(
+                      onPressed: canAdd ? _confirm : null,
+                      colors: MiuixButtonDefaults.buttonColorsPrimary(context),
+                      minHeight: 48,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: const [
+                          MiuixIcon(
+                            icon: Icons.event_available_rounded,
+                            size: 18,
+                          ),
+                          SizedBox(width: 6),
+                          MiuixText('添加到日历'),
+                        ],
+                      ),
+                    ),
+                  ),
                 ),
               ],
             ),
-          ),
+          ],
         ),
       ),
     );
