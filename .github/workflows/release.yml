@@ -49,7 +49,9 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          # AGP 9 的 lint 依赖 JDK 21 的 List.removeLast()，用 JDK 17 会在
+          # lintVitalAnalyzeRelease 阶段抛 NoSuchMethodError，需与本地 JBR 21 对齐
+          java-version: '21'
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2

@@ -80,7 +80,7 @@
 
 - Flutter SDK 3.50 或更高
 - Android SDK
-- JDK 17
+- JDK 21（Android Gradle Plugin 9 的 lint 依赖 JDK 21 API；Android Studio 自带 JBR 21）
 
 ### 获取依赖
 
