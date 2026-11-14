@@ -1,4 +1,5 @@
-import 'package:flutter/material.dart';
+import 'package:flutter_miuix/miuix.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// 应用配色：冷白底 + 深墨蓝文字，钴蓝作为主色；
 /// 紧迫度用琥珀 / 砖红 / 灰绿三种信号色，仅出现在状态与倒计时上。
@@ -13,6 +14,17 @@ class AppColors {
   static const danger = Color(0xFFC63A2F);
   static const line = Color(0xFFE4E7EF);
   static const fill = Color(0xFFF6F7FB);
+}
+
+/// Miuix 主题：沿用应用原有的钴蓝主色与冷白背景。
+MiuixThemeData buildMiuixTheme() {
+  return MiuixThemeData.light(
+    colors: lightColorScheme().copy(
+      primary: AppColors.accent,
+      background: AppColors.background,
+      surface: AppColors.surface,
+    ),
+  );
 }
 
 ThemeData buildAppTheme() {

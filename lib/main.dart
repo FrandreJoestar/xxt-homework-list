@@ -1,4 +1,5 @@
-import 'package:flutter/material.dart';
+import 'package:flutter_miuix/miuix.dart';
+import 'package:material_ui/material_ui.dart';
 
 import 'screens/home_screen.dart';
 import 'screens/login_screen.dart';
@@ -64,16 +65,25 @@ class _XuexitongAppState extends State<XuexitongApp> {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: '学习通作业本',
-      debugShowCheckedModeBanner: false,
-      navigatorKey: _navigatorKey,
-      theme: buildAppTheme(),
-      home: _booting
-          ? const _BootScreen()
-          : _loggedIn
-          ? HomeScreen(onLoggedOut: _onLoggedOut)
-          : LoginScreen(onLoggedIn: _onLoggedIn),
+    return MiuixTheme(
+      data: buildMiuixTheme(),
+      child: MaterialApp(
+        title: '学习通作业本',
+        debugShowCheckedModeBanner: false,
+        navigatorKey: _navigatorKey,
+        theme: buildAppTheme(),
+        // 没有 Material 祖先时，Text 会继承 DefaultTextStyle.fallback 的黄色双下划线；
+        // 这里统一给全局文本一个 Miuix 基础样式。
+        builder: (context, child) => DefaultTextStyle(
+          style: MiuixTheme.of(context).textStyles.main,
+          child: child ?? const SizedBox.shrink(),
+        ),
+        home: _booting
+            ? const _BootScreen()
+            : _loggedIn
+            ? HomeScreen(onLoggedOut: _onLoggedOut)
+            : LoginScreen(onLoggedIn: _onLoggedIn),
+      ),
     );
   }
 }
@@ -83,13 +93,11 @@ class _BootScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(
-      body: Center(
-        child: SizedBox(
-          width: 22,
-          height: 22,
-          child: CircularProgressIndicator(strokeWidth: 2.4),
-        ),
+    final theme = MiuixTheme.of(context);
+    return MiuixScaffold(
+      containerColor: theme.colors.background,
+      content: (padding) => const Center(
+        child: MiuixCircularProgressIndicator(size: 22, strokeWidth: 2.4),
       ),
     );
   }

@@ -1,15 +1,16 @@
 import 'dart:async';
+import 'dart:ui' show ImageFilter;
 
-import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_miuix/miuix.dart';
+import 'package:material_ui/material_ui.dart';
 
 import '../models/homework.dart';
 import '../services/calendar_service.dart';
 import '../services/chaoxing_client.dart';
 import '../services/homework_cache.dart';
 import '../services/session_store.dart';
-import '../theme.dart';
 import '../utils/reminder_text.dart';
 import '../widgets/reminder_picker.dart';
 
@@ -26,10 +27,11 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   final ChaoxingClient _client = ChaoxingClient(SessionStore());
   final HomeworkCache _cache = HomeworkCache();
   final Map<HomeworkFilter, ScrollController> _scrollControllers = {};
-  late final TabController _tabController = TabController(
-    length: HomeworkFilter.values.length,
-    vsync: this,
-  );
+  final PageController _pageController = PageController();
+  final MiuixSnackbarHostState _snackbarHost = MiuixSnackbarHostState();
+  final ValueNotifier<bool> _barsVisible = ValueNotifier<bool>(true);
+  final GlobalKey _dockTabsKey = GlobalKey();
+  bool _dockDragging = false;
 
   final Set<String> _selectedIds = {};
   final Map<HomeworkFilter, Map<String, GlobalKey>> _cardKeys = {};
@@ -41,7 +43,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   bool _importing = false;
   bool _selectionMode = false;
   Duration _reminderLead = const Duration(hours: 2);
-  int _lastTabIndex = 0;
+  int _selectedTab = 0;
   String? _progress;
   String? _error;
   bool _needLogin = false;
@@ -59,7 +61,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   final Map<HomeworkFilter, List<Homework>> _sortedCache = {};
   List<Homework> _sortedSource = const [];
 
-  HomeworkFilter get _filter => HomeworkFilter.values[_tabController.index];
+  HomeworkFilter get _filter => HomeworkFilter.values[_selectedTab];
 
   List<Homework> get _currentTabItems => _sortedFor(_filter);
 
@@ -88,8 +90,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   void initState() {
     super.initState();
     _autoScrollTicker = createTicker(_onAutoScrollTick);
-    _lastTabIndex = _tabController.index;
-    _tabController.addListener(_onTabChanged);
     _bootstrap();
   }
 
@@ -115,24 +115,85 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     for (final controller in _scrollControllers.values) {
       controller.dispose();
     }
-    _tabController.removeListener(_onTabChanged);
-    _tabController.dispose();
+    _pageController.dispose();
+    _snackbarHost.dispose();
+    _barsVisible.dispose();
     _client.dispose();
     super.dispose();
   }
 
-  void _onTabChanged() {
-    if (!mounted) return;
-    final index = _tabController.index;
-    if (index != _lastTabIndex) {
-      _lastTabIndex = index;
-      if (_selectionMode) {
-        _selectedIds.clear();
-        _selectionMode = false;
-        _stopDragSelection();
-      }
+  void _selectTab(int index, {bool animate = true}) {
+    if (index == _selectedTab) return;
+    if (_selectionMode) {
+      _selectedIds.clear();
+      _selectionMode = false;
+      _stopDragSelection();
     }
-    setState(() {});
+    setState(() => _selectedTab = index);
+    _barsVisible.value = true;
+    if (!_pageController.hasClients) return;
+    if (animate) {
+      _pageController.animateToPage(
+        index,
+        duration: const Duration(milliseconds: 260),
+        curve: MiuixMotion.standardDecelerate,
+      );
+    } else {
+      _pageController.jumpToPage(index);
+    }
+  }
+
+  void _onPageChanged(int index) {
+    if (!mounted || index == _selectedTab) return;
+    if (_selectionMode) {
+      _selectedIds.clear();
+      _selectionMode = false;
+      _stopDragSelection();
+    }
+    setState(() => _selectedTab = index);
+    _barsVisible.value = true;
+  }
+
+  /// 上滑列表时顶栏与 dock 一起滑出屏幕，下滑或回到顶部时再滑入。
+  bool _handleScrollNotification(ScrollNotification notification) {
+    if (_selectionMode || notification.metrics.axis != Axis.vertical) {
+      return false;
+    }
+    if (notification is ScrollUpdateNotification) {
+      final delta = notification.scrollDelta ?? 0;
+      if (delta > 6 && _barsVisible.value) {
+        _barsVisible.value = false;
+      } else if (delta < -6 && !_barsVisible.value) {
+        _barsVisible.value = true;
+      }
+    } else if (notification is ScrollEndNotification &&
+        notification.metrics.pixels <= 0) {
+      _barsVisible.value = true;
+    }
+    return false;
+  }
+
+  // ------------------------------------------------------------ 分类 dock
+
+  void _handleDockLongPressStart(LongPressStartDetails details) {
+    _dockDragging = true;
+    HapticFeedback.selectionClick();
+    _selectTabAt(details.globalPosition);
+  }
+
+  void _handleDockLongPressMove(LongPressMoveUpdateDetails details) {
+    if (!_dockDragging) return;
+    _selectTabAt(details.globalPosition);
+  }
+
+  /// 长按 dock 后左右拖动，手指落在哪个分类上就切到哪个分类。
+  void _selectTabAt(Offset globalPosition) {
+    final box = _dockTabsKey.currentContext?.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize || box.size.width <= 0) return;
+    final dx = globalPosition.dx - box.localToGlobal(Offset.zero).dx;
+    final count = HomeworkFilter.values.length;
+    final index = (dx / box.size.width * count).floor().clamp(0, count - 1);
+    _selectTab(index);
   }
 
   Future<void> _load() async {
@@ -162,7 +223,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           });
         },
       );
-      // 取消时让下拉刷新立刻收起，不再等待已发出的网络请求。
+      // 取消时立即结束等待，已发出的网络请求结果会被丢弃。
       final result = await Future.any<HomeworkFetchResult?>([
         fetch,
         cancel.future.then((_) => null),
@@ -200,9 +261,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     }
   }
 
-  /// 取消正在进行的刷新：立即收起进度提示，后台请求结果会被丢弃。
+  /// 取消正在进行的刷新：立即收起刷新状态，后台请求结果会被丢弃。
   void _cancelRefresh() {
-    if (!_refreshing || _items.isEmpty) return;
+    if (!_refreshing) return;
     _loadEpoch++;
     _refreshCancel?.complete();
     _refreshCancel = null;
@@ -218,11 +279,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   void _showMessage(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
-        SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
-      );
+    _snackbarHost.showSnackbar(message);
   }
 
   // ------------------------------------------------------------ 多选
@@ -258,6 +315,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   void _toggleSelection(Homework homework) {
     HapticFeedback.selectionClick();
+    _barsVisible.value = true;
     setState(() {
       _selectionMode = true;
       if (!_selectedIds.add(homework.id)) {
@@ -268,6 +326,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   void _selectAllInTab() {
     HapticFeedback.selectionClick();
+    _barsVisible.value = true;
     setState(() {
       _selectionMode = true;
       _selectedIds.addAll(_currentTabItems.map((h) => h.id));
@@ -276,6 +335,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   void _invertSelectionInTab() {
     HapticFeedback.selectionClick();
+    _barsVisible.value = true;
     setState(() {
       _selectionMode = true;
       for (final homework in _currentTabItems) {
@@ -288,6 +348,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   void _exitSelection() {
     _stopDragSelection();
+    _barsVisible.value = true;
     setState(() {
       _selectionMode = false;
       _selectedIds.clear();
@@ -298,6 +359,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   void _startDragSelection(Homework homework) {
     _stopDragSelection();
     HapticFeedback.mediumImpact();
+    _barsVisible.value = true;
     setState(() {
       _selectionMode = true;
       _selectedIds.add(homework.id);
@@ -336,8 +398,9 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     final controller = _scrollControllerFor(_filter);
     if (!controller.hasClients) return;
     final media = MediaQuery.of(context);
-    final topEdge = media.padding.top + kToolbarHeight + 46 + 16;
-    final bottomEdge = media.size.height - media.padding.bottom - 150;
+    // 分类栏已移到底部 dock；多选拖拽时列表下方是导入栏。
+    final topEdge = media.padding.top + kToolbarHeight + 12;
+    final bottomEdge = media.size.height - media.padding.bottom - 110;
 
     double speed = 0;
     if (globalPosition.dy < topEdge) {
@@ -407,18 +470,66 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   // ------------------------------------------------------------ 作业详情
 
   Future<void> _openDetail(Homework homework) async {
-    final detail = await showDialog<HomeworkDetail>(
+    final origin = _cardRectOf(homework);
+    final detail = await showGeneralDialog<HomeworkDetail>(
       context: context,
-      builder: (context) => _HomeworkDetailDialog(
-        homework: homework,
-        load: () => _client.fetchHomeworkDetail(homework),
-      ),
+      barrierDismissible: true,
+      barrierLabel: '关闭作业详情',
+      barrierColor: Colors.black54,
+      transitionDuration: const Duration(milliseconds: 280),
+      pageBuilder: (context, animation, secondaryAnimation) =>
+          _HomeworkDetailDialog(
+            homework: homework,
+            load: () => _client.fetchHomeworkDetail(homework),
+          ),
+      transitionBuilder: (context, animation, secondaryAnimation, child) =>
+          _expandFrom(origin, animation, child),
     );
     if (detail == null || !mounted) return;
 
     final deadline = detail.deadline ?? homework.deadline;
     if (deadline == null) return;
     await _addSingleToCalendar(homework, deadline);
+  }
+
+  /// 卡片在屏幕上的位置，作为详情弹窗展开动画的起点。
+  Rect? _cardRectOf(Homework homework) {
+    final renderObject = _cardKeys[_filter]?[homework.id]?.currentContext
+        ?.findRenderObject();
+    if (renderObject is! RenderBox || !renderObject.attached) return null;
+    return renderObject.localToGlobal(Offset.zero) & renderObject.size;
+  }
+
+  /// 详情弹窗从卡片位置纵向展开到屏幕中央，关闭时反向收回到卡片。
+  Widget _expandFrom(Rect? origin, Animation<double> animation, Widget child) {
+    final screenCenter = MediaQuery.sizeOf(context).center(Offset.zero);
+    final startY = origin?.center.dy ?? screenCenter.dy;
+    final curved = CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+    return AnimatedBuilder(
+      animation: curved,
+      child: child,
+      builder: (context, child) {
+        final t = curved.value;
+        return Stack(
+          alignment: Alignment.center,
+          children: [
+            Transform.translate(
+              offset: Offset(0, (startY - screenCenter.dy) * (1 - t)),
+              child: SizeTransition(
+                sizeFactor: curved,
+                axis: Axis.vertical,
+                alignment: Alignment.center,
+                child: FadeTransition(opacity: curved, child: child!),
+              ),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   Future<void> _addSingleToCalendar(
@@ -501,112 +612,220 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
+    final theme = MiuixTheme.of(context);
+    final appBarHeight =
+        MediaQuery.paddingOf(context).top +
+        MiuixTopAppBarDefaults.smallTopAppBarCenterHeight;
     return PopScope(
       canPop: !_selectionMode,
       onPopInvokedWithResult: (didPop, result) {
         if (!didPop && _selectionMode) _exitSelection();
       },
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(
-            _selectionMode ? '已选 ${_selectedIds.length} 项' : '学习通作业本',
+      child: MiuixScaffold(
+        containerColor: theme.colors.background,
+        snackbarHost: MiuixSnackbarHost(state: _snackbarHost),
+        bottomBar: _selectionMode ? _buildImportBar(theme) : null,
+        content: (_) => NotificationListener<ScrollNotification>(
+          onNotification: _handleScrollNotification,
+          child: Stack(
+            children: [
+              // 顶栏藏起时列表同步向上长高，用真正的顶栏高度做内边距过渡。
+              ValueListenableBuilder<bool>(
+                valueListenable: _barsVisible,
+                builder: (context, visible, child) => AnimatedPadding(
+                  padding: EdgeInsets.only(top: visible ? appBarHeight : 0),
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  child: child,
+                ),
+                child: _buildBody(theme),
+              ),
+              // 顶栏滑出后状态栏区域仍保留背景色，内容只在其下方滚过。
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                height: MediaQuery.paddingOf(context).top,
+                child: ColoredBox(color: theme.colors.surface),
+              ),
+              Positioned(
+                left: 0,
+                right: 0,
+                top: 0,
+                child: ValueListenableBuilder<bool>(
+                  valueListenable: _barsVisible,
+                  builder: (context, visible, child) => AnimatedSlide(
+                    offset: visible ? Offset.zero : const Offset(0, -1.2),
+                    duration: const Duration(milliseconds: 220),
+                    curve: Curves.easeOutCubic,
+                    child: child,
+                  ),
+                  child: _buildTopBar(theme),
+                ),
+              ),
+              if (!_selectionMode)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: ValueListenableBuilder<bool>(
+                    valueListenable: _barsVisible,
+                    builder: (context, visible, child) => AnimatedSlide(
+                      offset: visible ? Offset.zero : const Offset(0, 1.4),
+                      duration: const Duration(milliseconds: 220),
+                      curve: Curves.easeOutCubic,
+                      child: child,
+                    ),
+                    child: _buildCategoryDock(theme),
+                  ),
+                ),
+            ],
           ),
-          actions: _selectionMode
-              ? [
-                  _buildSelectAction('全选', _selectAllInTab),
-                  _buildSelectAction('反选', _invertSelectionInTab),
-                  _buildSelectAction('取消', _exitSelection),
-                ]
-              : [
-                  IconButton(
-                    tooltip: _refreshing
-                        ? (_items.isEmpty ? '正在刷新' : '取消刷新')
-                        : '刷新',
-                    onPressed: _refreshing
-                        ? (_items.isEmpty ? null : _cancelRefresh)
-                        : _load,
-                    icon: _refreshing
-                        ? (_items.isEmpty
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : const Icon(Icons.close_rounded, size: 22))
-                        : const Icon(Icons.refresh_rounded, size: 22),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTopBar(MiuixThemeData theme) {
+    return MiuixSmallTopAppBar(
+      title: _selectionMode ? '已选 ${_selectedIds.length} 项' : '学习通作业本',
+      actions: _selectionMode
+          ? [
+              _buildSelectAction('全选', _selectAllInTab, theme),
+              _buildSelectAction('反选', _invertSelectionInTab, theme),
+              _buildSelectAction('取消', _exitSelection, theme),
+            ]
+          : _buildAppBarActions(context),
+    );
+  }
+
+  /// 底部分类 dock：半透明悬浮面板，盖在列表之上；列表下滑时滑出屏幕，上滑时滑入。
+  Widget _buildCategoryDock(MiuixThemeData theme) {
+    return SafeArea(
+      top: false,
+      minimum: const EdgeInsets.only(bottom: 10),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+        child: Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(24),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.12),
+                blurRadius: 18,
+                offset: const Offset(0, 6),
+              ),
+            ],
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(24),
+            child: BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 22, sigmaY: 22),
+              child: ColoredBox(
+                color: theme.colors.surface.withValues(alpha: 0.72),
+                child: Padding(
+                  padding: const EdgeInsets.all(6),
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onLongPressStart: _handleDockLongPressStart,
+                    onLongPressMoveUpdate: _handleDockLongPressMove,
+                    onLongPressEnd: (_) => _dockDragging = false,
+                    onLongPressCancel: () => _dockDragging = false,
+                    child: KeyedSubtree(
+                      key: _dockTabsKey,
+                      child: MiuixTabRowWithContour(
+                        tabs: [
+                          for (final filter in HomeworkFilter.values)
+                            '${filter.label} ${_countOf(filter)}',
+                        ],
+                        selectedTabIndex: _selectedTab,
+                        onTabSelected: _selectTab,
+                        height: 44,
+                        minWidth: 56,
+                        maxWidth: 96,
+                        itemSpacing: 4,
+                        cornerRadius: 20,
+                        colors: MiuixTabRowColors(
+                          backgroundColor: Colors.transparent,
+                          contentColor: theme.colors.onSurfaceVariantSummary,
+                          selectedBackgroundColor: theme.colors.primary,
+                          selectedContentColor: theme.colors.onPrimary,
+                        ),
+                      ),
+                    ),
                   ),
-                  PopupMenuButton<String>(
-                    tooltip: '更多',
-                    onSelected: (value) {
-                      if (value == 'logout') {
-                        widget.onLoggedOut();
-                      } else if (value == 'refresh') {
-                        _load();
-                      }
-                    },
-                    itemBuilder: (context) => const [
-                      PopupMenuItem(value: 'refresh', child: Text('刷新作业')),
-                      PopupMenuItem(value: 'logout', child: Text('退出登录')),
-                    ],
-                  ),
-                ],
-          bottom: PreferredSize(
-            preferredSize: const Size.fromHeight(46),
-            child: TabBar(
-              controller: _tabController,
-              tabs: [
-                for (final filter in HomeworkFilter.values)
-                  Tab(text: '${filter.label} ${_countOf(filter)}'),
-              ],
+                ),
+              ),
             ),
           ),
         ),
-        body: _buildBody(),
-        bottomNavigationBar: _buildImportBar(),
       ),
     );
   }
 
-  Widget _buildSelectAction(String label, VoidCallback onPressed) {
-    return TextButton(
+  List<Widget> _buildAppBarActions(BuildContext context) {
+    return [
+      // 有缓存时刷新中可点击取消；首次加载没有内容可看，只显示进度。
+      MiuixIconButton(
+        onPressed: _refreshing
+            ? (_items.isEmpty ? null : _cancelRefresh)
+            : _load,
+        child: _refreshing
+            ? (_items.isEmpty
+                  ? const MiuixCircularProgressIndicator(
+                      size: 18,
+                      strokeWidth: 2,
+                    )
+                  : const MiuixIcon(icon: Icons.close_rounded, size: 22))
+            : const MiuixIcon(icon: Icons.refresh_rounded, size: 22),
+      ),
+      MiuixOverlayIconDropdownMenu(
+        entry: MiuixDropdownEntry(
+          items: [
+            MiuixDropdownItem(text: '刷新作业', onClick: _load),
+            MiuixDropdownItem(text: '退出登录', onClick: widget.onLoggedOut),
+          ],
+        ),
+        child: const MiuixIcon(icon: Icons.more_vert_rounded, size: 22),
+      ),
+    ];
+  }
+
+  Widget _buildSelectAction(
+    String label,
+    VoidCallback onPressed,
+    MiuixThemeData theme,
+  ) {
+    return MiuixTextButton(
+      label,
       onPressed: onPressed,
-      style: TextButton.styleFrom(
-        foregroundColor: AppColors.ink,
-        minimumSize: const Size(0, 40),
-        padding: const EdgeInsets.symmetric(horizontal: 9),
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        textStyle: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+      minWidth: 0,
+      minHeight: 34,
+      insideMargin: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      textStyle: theme.textStyles.footnote1.copyWith(
+        fontWeight: FontWeight.w600,
       ),
-      child: Text(label),
     );
   }
 
-  Widget _buildBody() {
+  Widget _buildBody(MiuixThemeData theme) {
     if (_loading && _items.isEmpty) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const SizedBox(
-              width: 26,
-              height: 26,
-              child: CircularProgressIndicator(strokeWidth: 2.4),
-            ),
+            const MiuixCircularProgressIndicator(size: 26, strokeWidth: 2.4),
             const SizedBox(height: 16),
-            Text(
+            MiuixText(
               _progress ?? '正在登录学习通…',
-              style: const TextStyle(
-                fontSize: 13,
-                color: AppColors.muted,
-                fontFeatures: [FontFeature.tabularFigures()],
-              ),
+              style: theme.textStyles.footnote1,
+              color: theme.colors.onSurfaceVariantSummary,
             ),
             const SizedBox(height: 6),
-            const Text(
+            MiuixText(
               '首次加载需要逐门课程读取作业，请稍候',
-              style: TextStyle(fontSize: 12, color: AppColors.muted),
+              style: theme.textStyles.footnote2,
+              color: theme.colors.onSurfaceVariantSummary,
             ),
           ],
         ),
@@ -614,130 +833,104 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     }
 
     if (_error != null && _items.isEmpty) {
-      return _buildError();
+      return _buildError(theme);
     }
 
-    // 用 TabBarView 承载各分类：左右滑动时页面跟随手指移动并带过渡动画。
-    return TabBarView(
-      controller: _tabController,
+    return PageView(
+      controller: _pageController,
+      onPageChanged: _onPageChanged,
       children: [
-        for (final filter in HomeworkFilter.values) _buildTabPage(filter),
+        for (final filter in HomeworkFilter.values)
+          _buildTabPage(filter, theme),
       ],
     );
   }
 
-  Widget _buildTabPage(HomeworkFilter filter) {
+  Widget _buildTabPage(HomeworkFilter filter, MiuixThemeData theme) {
     final items = _sortedFor(filter);
-    return Stack(
-      children: [
-        RefreshIndicator(
-          onRefresh: _load,
-          child: GestureDetector(
-            behavior: HitTestBehavior.translucent,
-            onTapUp: (details) => _handleTap(details.globalPosition),
-            onLongPressStart: (details) =>
-                _handleLongPressStart(details.globalPosition),
-            onLongPressMoveUpdate: (details) =>
-                _updateDragSelection(details.globalPosition),
-            onLongPressEnd: (_) => _stopDragSelection(),
-            child: ListView(
-              key: PageStorageKey<String>('homework-${filter.name}'),
-              controller: _scrollControllerFor(filter),
-              physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-              children: [
-                if (_failedCourses.isNotEmpty) _buildFailedBanner(),
-                if (items.isNotEmpty) _buildUsageHint(),
-                if (items.isEmpty)
-                  _buildEmpty(filter)
-                else
-                  for (final homework in items)
-                    _HomeworkCard(
-                      key: _cardKeyFor(filter, homework.id),
-                      homework: homework,
-                      selectionMode: _selectionMode,
-                      selected: _selectedIds.contains(homework.id),
-                    ),
-              ],
-            ),
+    return MiuixPullToRefresh(
+      isRefreshing: _refreshing,
+      onRefresh: () {
+        _load();
+      },
+      color: theme.colors.primary,
+      refreshTexts: const ['下拉刷新', '松开刷新', '正在刷新…', '刷新完成'],
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTapUp: (details) => _handleTap(details.globalPosition),
+        onLongPressStart: (details) =>
+            _handleLongPressStart(details.globalPosition),
+        onLongPressMoveUpdate: (details) =>
+            _updateDragSelection(details.globalPosition),
+        onLongPressEnd: (_) => _stopDragSelection(),
+        child: ListView(
+          key: PageStorageKey<String>('homework-${filter.name}'),
+          controller: _scrollControllerFor(filter),
+          physics: const AlwaysScrollableScrollPhysics(),
+          // 顶部与顶栏的间距由外层内边距负责；底部留出悬浮 dock 与系统手势区，
+          // 这样最后一张卡片也能完整滚到 dock 上方。
+          padding: EdgeInsets.fromLTRB(
+            16,
+            12,
+            16,
+            24 + MediaQuery.paddingOf(context).bottom + 78,
           ),
+          children: [
+            if (_failedCourses.isNotEmpty) _buildFailedBanner(theme),
+            if (items.isNotEmpty) _buildUsageHint(theme),
+            if (items.isEmpty)
+              _buildEmpty(filter, theme)
+            else
+              for (final homework in items)
+                _HomeworkCard(
+                  key: _cardKeyFor(filter, homework.id),
+                  homework: homework,
+                  selectionMode: _selectionMode,
+                  selected: _selectedIds.contains(homework.id),
+                ),
+          ],
         ),
-        if (_refreshing)
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: Container(
-              color: AppColors.background.withValues(alpha: 0.92),
-              child: Row(
-                children: [
-                  const Expanded(child: LinearProgressIndicator(minHeight: 2)),
-                  if (_items.isNotEmpty)
-                    InkWell(
-                      onTap: _cancelRefresh,
-                      child: const Padding(
-                        padding: EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 6,
-                        ),
-                        child: Text(
-                          '取消刷新',
-                          style: TextStyle(
-                            fontSize: 11.5,
-                            color: AppColors.muted,
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-      ],
+      ),
     );
   }
 
-  Widget _buildError() {
+  Widget _buildError(MiuixThemeData theme) {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(
-              Icons.cloud_off_rounded,
+            MiuixIcon(
+              icon: Icons.cloud_off_rounded,
               size: 44,
-              color: AppColors.muted,
+              tint: theme.colors.onSurfaceVariantSummary,
             ),
             const SizedBox(height: 16),
-            const Text(
+            MiuixText(
               '加载失败',
-              style: TextStyle(
-                fontSize: 18,
+              style: theme.textStyles.title4.copyWith(
                 fontWeight: FontWeight.w700,
-                color: AppColors.ink,
               ),
             ),
             const SizedBox(height: 8),
-            Text(
+            MiuixText(
               _error!,
               textAlign: TextAlign.center,
-              style: const TextStyle(
-                fontSize: 13,
-                height: 1.5,
-                color: AppColors.muted,
-              ),
+              style: theme.textStyles.footnote1,
+              color: theme.colors.onSurfaceVariantSummary,
             ),
             const SizedBox(height: 20),
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                OutlinedButton(onPressed: _load, child: const Text('重试')),
+                MiuixTextButton('重试', onPressed: _load),
                 if (_needLogin) ...[
                   const SizedBox(width: 12),
-                  FilledButton(
+                  MiuixButton(
                     onPressed: () => widget.onLoggedOut(),
-                    child: const Text('重新登录'),
+                    colors: MiuixButtonDefaults.buttonColorsPrimary(context),
+                    child: const MiuixText('重新登录'),
                   ),
                 ],
               ],
@@ -749,70 +942,74 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   }
 
   /// 列表顶部的一句使用提示：点击看详情、长按多选导入日历。
-  Widget _buildUsageHint() {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-      decoration: BoxDecoration(
-        color: AppColors.accent.withValues(alpha: 0.05),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: const Row(
-        children: [
-          Icon(Icons.touch_app_outlined, size: 14, color: AppColors.accent),
-          SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              '点击卡片查看作业详情，长按卡片可多选并导入日历',
-              style: TextStyle(
-                fontSize: 11.5,
-                height: 1.4,
-                color: AppColors.muted,
+  Widget _buildUsageHint(MiuixThemeData theme) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: MiuixSurface(
+        cornerRadius: 12,
+        color: theme.colors.surfaceContainerHigh,
+        contentColor: theme.colors.onSurfaceContainerHigh,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          child: Row(
+            children: [
+              MiuixIcon(
+                icon: Icons.touch_app_outlined,
+                size: 14,
+                tint: theme.colors.primary,
               ),
-            ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: MiuixText(
+                  '点击卡片查看作业详情，长按卡片可多选并导入日历',
+                  style: theme.textStyles.footnote2.copyWith(height: 1.4),
+                  color: theme.colors.onSurfaceVariantSummary,
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
 
-  Widget _buildFailedBanner() {
+  Widget _buildFailedBanner(MiuixThemeData theme) {
     final names = _failedCourses.take(3).join('、');
     final more = _failedCourses.length > 3
         ? ' 等 ${_failedCourses.length} 门'
         : '';
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: AppColors.pending.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Icon(
-            Icons.info_outline_rounded,
-            size: 16,
-            color: AppColors.pending,
-          ),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              '部分课程的作业未读取到（可能未开放作业功能）：$names$more',
-              style: const TextStyle(
-                fontSize: 12,
-                height: 1.45,
-                color: AppColors.pending,
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: MiuixSurface(
+        cornerRadius: 12,
+        color: theme.colors.errorContainer,
+        contentColor: theme.colors.onErrorContainer,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              MiuixIcon(
+                icon: Icons.info_outline_rounded,
+                size: 16,
+                tint: theme.colors.onErrorContainer,
               ),
-            ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: MiuixText(
+                  '部分课程的作业未读取到（可能未开放作业功能）：$names$more',
+                  style: theme.textStyles.footnote2.copyWith(height: 1.45),
+                  color: theme.colors.onErrorContainer,
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
 
-  Widget _buildEmpty(HomeworkFilter filter) {
+  Widget _buildEmpty(HomeworkFilter filter, MiuixThemeData theme) {
     final (String title, String hint) = switch (filter) {
       HomeworkFilter.all => ('还没有作业', '下拉可刷新'),
       HomeworkFilter.pending => ('没有待交作业', '当前作业都已完成或已截止'),
@@ -824,42 +1021,40 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Container(
-            width: 56,
-            height: 56,
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              shape: BoxShape.circle,
-              border: Border.all(color: AppColors.line),
-            ),
-            child: const Icon(
-              Icons.inbox_rounded,
-              size: 26,
-              color: AppColors.muted,
+          MiuixSurface(
+            cornerRadius: 28,
+            color: theme.colors.surfaceContainerHigh,
+            contentColor: theme.colors.onSurfaceContainerHigh,
+            child: const SizedBox(
+              width: 56,
+              height: 56,
+              child: Center(
+                child: MiuixIcon(
+                  icon: Icons.inbox_rounded,
+                  size: 26,
+                  tint: Color(0xFF8A8F98),
+                ),
+              ),
             ),
           ),
           const SizedBox(height: 14),
-          Text(
+          MiuixText(
             title,
-            style: const TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.w600,
-              color: AppColors.ink,
-            ),
+            style: theme.textStyles.subtitle.copyWith(fontSize: 15),
           ),
           const SizedBox(height: 6),
-          Text(
+          MiuixText(
             hint,
-            style: const TextStyle(fontSize: 12.5, color: AppColors.muted),
+            style: theme.textStyles.footnote2,
+            color: theme.colors.onSurfaceVariantSummary,
           ),
         ],
       ),
     );
   }
 
-  Widget? _buildImportBar() {
-    if (!_selectionMode) return null;
-
+  /// 多选时的导入栏。底部安全区由下方分类 dock 统一处理。
+  Widget _buildImportBar(MiuixThemeData theme) {
     final now = DateTime.now();
     final selected = _selectedItems;
     final importable = selected
@@ -872,48 +1067,60 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
         ? '已选 ${selected.length} 项 · 导入时可设置提前提醒时间'
         : '已选 ${selected.length} 项，其中 $importable 项可导入（其余无可用的未来截止时间）';
 
-    return Container(
-      decoration: const BoxDecoration(
-        color: AppColors.surface,
-        border: Border(top: BorderSide(color: AppColors.line)),
-      ),
-      child: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                hint,
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 12, color: AppColors.muted),
-              ),
-              const SizedBox(height: 8),
-              FilledButton.icon(
+    return MiuixSurface(
+      color: theme.colors.surface,
+      contentColor: theme.colors.onSurface,
+      border: Border(top: BorderSide(color: theme.colors.dividerLine)),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 16, 10),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            MiuixText(
+              hint,
+              textAlign: TextAlign.center,
+              style: theme.textStyles.footnote2,
+              color: theme.colors.onSurfaceVariantSummary,
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              width: double.infinity,
+              child: MiuixButton(
                 onPressed: (importable == 0 || _importing)
                     ? null
                     : _importSelected,
-                icon: _importing
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2,
-                          color: Colors.white,
+                colors: MiuixButtonDefaults.buttonColorsPrimary(context),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_importing)
+                      const MiuixCircularProgressIndicator(
+                        size: 18,
+                        strokeWidth: 2,
+                        colors: MiuixProgressIndicatorColors(
+                          foregroundColor: Colors.white,
+                          disabledForegroundColor: Colors.white70,
+                          backgroundColor: Colors.white24,
                         ),
                       )
-                    : const Icon(Icons.event_available_rounded, size: 20),
-                label: Text(
-                  _importing
-                      ? '正在导入…'
-                      : importable == 0
-                      ? '导入日历'
-                      : '导入日历（$importable）',
+                    else
+                      const MiuixIcon(
+                        icon: Icons.event_available_rounded,
+                        size: 20,
+                      ),
+                    const SizedBox(width: 8),
+                    MiuixText(
+                      _importing
+                          ? '正在导入…'
+                          : importable == 0
+                          ? '导入日历'
+                          : '导入日历（$importable）',
+                    ),
+                  ],
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -934,152 +1141,151 @@ class _HomeworkCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = MiuixTheme.of(context);
     final expired = homework.isExpired;
     final submitted = homework.isSubmitted;
     final statusColor = expired
-        ? AppColors.muted
+        ? theme.colors.onSurfaceVariantSummary
         : submitted
-        ? AppColors.success
-        : AppColors.pending;
+        ? const Color(0xFF1F7A52)
+        : const Color(0xFFB26A00);
 
     final now = DateTime.now();
     final remaining = _remainingText(now);
-    final remainingColor = _remainingColor(now);
+    final remainingColor = _remainingColor(now, theme);
 
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 120),
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.fromLTRB(14, 13, 14, 12),
-      decoration: BoxDecoration(
-        color: selected
-            ? AppColors.accent.withValues(alpha: 0.045)
-            : AppColors.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: selected ? AppColors.accent : AppColors.line,
-          width: selected ? 1.4 : 1,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              if (selectionMode) ...[
-                Padding(
-                  padding: const EdgeInsets.only(top: 1),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 120),
-                    width: 20,
-                    height: 20,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: selected ? AppColors.accent : Colors.transparent,
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: selected ? AppColors.accent : AppColors.line,
-                        width: 1.6,
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: MiuixCard(
+        cornerRadius: 16,
+        insideMargin: const EdgeInsets.fromLTRB(14, 13, 14, 12),
+        colors: MiuixCardDefaults.defaultColors(context),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (selectionMode) ...[
+                  Padding(
+                    padding: const EdgeInsets.only(top: 1),
+                    child: Container(
+                      width: 22,
+                      height: 22,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: selected
+                            ? theme.colors.primary
+                            : Colors.transparent,
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: selected
+                              ? theme.colors.primary
+                              : theme.colors.outline,
+                          width: 1.6,
+                        ),
                       ),
+                      child: selected
+                          ? MiuixIcon(
+                              icon: Icons.check_rounded,
+                              size: 14,
+                              tint: theme.colors.onPrimary,
+                            )
+                          : null,
                     ),
-                    child: selected
-                        ? const Icon(
-                            Icons.check_rounded,
-                            size: 14,
-                            color: Colors.white,
-                          )
-                        : null,
+                  ),
+                  const SizedBox(width: 9),
+                ],
+                Expanded(
+                  child: MiuixText(
+                    homework.title,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textStyles.body1.copyWith(
+                      fontSize: 15,
+                      height: 1.35,
+                      fontWeight: FontWeight.w600,
+                    ),
                   ),
                 ),
-                const SizedBox(width: 9),
+                const SizedBox(width: 10),
+                MiuixSurface(
+                  cornerRadius: 20,
+                  color: statusColor.withValues(alpha: 0.12),
+                  contentColor: statusColor,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 3,
+                    ),
+                    child: MiuixText(
+                      homework.displayStatus,
+                      style: theme.textStyles.footnote2.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                      color: statusColor,
+                    ),
+                  ),
+                ),
               ],
-              Expanded(
-                child: Text(
-                  homework.title,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 15,
-                    height: 1.35,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.ink,
+            ),
+            const SizedBox(height: 9),
+            Row(
+              children: [
+                MiuixIcon(
+                  icon: Icons.menu_book_outlined,
+                  size: 14,
+                  tint: theme.colors.onSurfaceVariantSummary,
+                ),
+                const SizedBox(width: 5),
+                Expanded(
+                  child: MiuixText(
+                    homework.course,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textStyles.footnote2,
+                    color: theme.colors.onSurfaceVariantSummary,
                   ),
                 ),
-              ),
-              const SizedBox(width: 10),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: statusColor.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(20),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                MiuixIcon(
+                  icon: Icons.schedule_rounded,
+                  size: 14,
+                  tint: expired
+                      ? theme.colors.onSurfaceVariantSummary
+                      : theme.colors.onSurface,
                 ),
-                child: Text(
-                  homework.displayStatus,
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    fontWeight: FontWeight.w600,
-                    color: statusColor,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 9),
-          Row(
-            children: [
-              const Icon(
-                Icons.menu_book_outlined,
-                size: 14,
-                color: AppColors.muted,
-              ),
-              const SizedBox(width: 5),
-              Expanded(
-                child: Text(
-                  homework.course,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 12.5,
-                    color: AppColors.muted,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Row(
-            children: [
-              Icon(
-                Icons.schedule_rounded,
-                size: 14,
-                color: expired ? AppColors.muted : AppColors.ink,
-              ),
-              const SizedBox(width: 5),
-              Text(
-                homework.deadline == null
-                    ? '截止时间未知'
-                    : _formatDeadline(homework.deadline!, now),
-                style: TextStyle(
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w500,
-                  color: expired ? AppColors.muted : AppColors.ink,
-                  fontFeatures: const [FontFeature.tabularFigures()],
-                ),
-              ),
-              const Spacer(),
-              if (remaining != null)
-                Text(
-                  remaining,
-                  style: TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w700,
-                    color: remainingColor,
+                const SizedBox(width: 5),
+                MiuixText(
+                  homework.deadline == null
+                      ? '截止时间未知'
+                      : _formatDeadline(homework.deadline!, now),
+                  style: theme.textStyles.footnote2.copyWith(
+                    fontWeight: FontWeight.w500,
                     fontFeatures: const [FontFeature.tabularFigures()],
                   ),
+                  color: expired
+                      ? theme.colors.onSurfaceVariantSummary
+                      : theme.colors.onSurface,
                 ),
-            ],
-          ),
-        ],
+                const Spacer(),
+                if (remaining != null)
+                  MiuixText(
+                    remaining,
+                    style: theme.textStyles.footnote2.copyWith(
+                      fontWeight: FontWeight.w700,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                    color: remainingColor,
+                  ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1102,13 +1308,15 @@ class _HomeworkCard extends StatelessWidget {
     return '不足 1 分钟';
   }
 
-  Color _remainingColor(DateTime now) {
+  Color _remainingColor(DateTime now, MiuixThemeData theme) {
     final deadline = homework.deadline;
-    if (deadline == null || homework.isExpired) return AppColors.muted;
+    if (deadline == null || homework.isExpired) {
+      return theme.colors.onSurfaceVariantSummary;
+    }
     final diff = deadline.difference(now);
-    if (diff.inHours < 24) return AppColors.danger;
-    if (diff.inDays < 3) return AppColors.pending;
-    return AppColors.muted;
+    if (diff.inHours < 24) return theme.colors.error;
+    if (diff.inDays < 3) return const Color(0xFFB26A00);
+    return theme.colors.onSurfaceVariantSummary;
   }
 }
 
@@ -1167,149 +1375,213 @@ class _HomeworkDetailDialogState extends State<_HomeworkDetailDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = MiuixTheme.of(context);
     final homework = widget.homework;
     final detail = _detail;
     final deadline = _deadline;
     final canAdd = deadline != null && deadline.isAfter(DateTime.now());
 
-    return Dialog(
-      backgroundColor: AppColors.surface,
-      insetPadding: const EdgeInsets.symmetric(horizontal: 26, vertical: 32),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 32),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 440),
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                '作业详情',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.6,
-                  color: AppColors.muted,
-                ),
-              ),
-              const SizedBox(height: 6),
-              Text(
-                detail?.title ?? homework.title,
-                style: const TextStyle(
-                  fontSize: 17,
-                  height: 1.35,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.ink,
-                ),
-              ),
-              const SizedBox(height: 10),
-              Row(
-                children: [
-                  const Icon(
-                    Icons.menu_book_outlined,
-                    size: 14,
-                    color: AppColors.muted,
+        child: Material(
+          color: theme.colors.background,
+          borderRadius: BorderRadius.circular(28),
+          clipBehavior: Clip.antiAlias,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(22, 20, 22, 18),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                MiuixText(
+                  '作业详情',
+                  style: theme.textStyles.footnote2.copyWith(
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 0.6,
                   ),
-                  const SizedBox(width: 5),
-                  Expanded(
-                    child: Text(
-                      homework.course,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12.5,
-                        color: AppColors.muted,
+                  color: theme.colors.primary,
+                ),
+                const SizedBox(height: 6),
+                MiuixText(
+                  detail?.title ?? homework.title,
+                  style: theme.textStyles.title4.copyWith(
+                    height: 1.35,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    MiuixIcon(
+                      icon: Icons.menu_book_outlined,
+                      size: 14,
+                      tint: theme.colors.onSurfaceVariantSummary,
+                    ),
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: MiuixText(
+                        homework.course,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textStyles.footnote1,
+                        color: theme.colors.onSurfaceVariantSummary,
                       ),
                     ),
+                    const SizedBox(width: 8),
+                    _buildStatusChip(theme),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                const MiuixHorizontalDivider(),
+                const SizedBox(height: 14),
+                if (_loading)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Row(
+                      children: [
+                        const MiuixCircularProgressIndicator(
+                          size: 16,
+                          strokeWidth: 2,
+                        ),
+                        const SizedBox(width: 10),
+                        MiuixText(
+                          '正在读取作业详情…',
+                          style: theme.textStyles.footnote1,
+                          color: theme.colors.onSurfaceVariantSummary,
+                        ),
+                      ],
+                    ),
+                  )
+                else ...[
+                  if (_error != null) _buildError(theme),
+                  _infoRow(
+                    theme,
+                    '题量',
+                    detail?.questionCount == null
+                        ? '—'
+                        : '${detail!.questionCount}',
                   ),
-                  const SizedBox(width: 8),
-                  _buildStatusChip(),
+                  _infoRow(
+                    theme,
+                    '满分',
+                    detail?.fullScore == null ? '—' : '${detail!.fullScore}',
+                  ),
+                  _infoRow(theme, '作答时间', _timeRange(deadline)),
+                  _infoRow(
+                    theme,
+                    '得分',
+                    (detail?.score ?? '').isEmpty ? '—' : '${detail!.score} 分',
+                  ),
                 ],
-              ),
-              const SizedBox(height: 14),
-              const Divider(height: 1, color: AppColors.line),
-              const SizedBox(height: 14),
-              if (_loading)
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 8),
-                  child: Row(
-                    children: [
-                      SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                      SizedBox(width: 10),
-                      Text(
-                        '正在读取作业详情…',
-                        style: TextStyle(
-                          fontSize: 12.5,
-                          color: AppColors.muted,
+                const SizedBox(height: 6),
+                if (!_loading && !canAdd)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: MiuixText(
+                      deadline == null
+                          ? '该作业没有可用的截止时间，无法添加到日历'
+                          : '作业已截止，无法添加到日历',
+                      style: theme.textStyles.footnote2,
+                      color: theme.colors.onSurfaceVariantSummary,
+                    ),
+                  ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: MiuixTextButton(
+                          '取消',
+                          onPressed: () => Navigator.of(context).pop(),
+                          minHeight: 48,
                         ),
                       ),
-                    ],
-                  ),
-                )
-              else ...[
-                if (_error != null) _buildError(),
-                _infoRow(
-                  '题量',
-                  detail?.questionCount == null
-                      ? '—'
-                      : '${detail!.questionCount}',
-                ),
-                _infoRow(
-                  '满分',
-                  detail?.fullScore == null ? '—' : '${detail!.fullScore}',
-                ),
-                _infoRow('作答时间', _timeRange(deadline)),
-                _infoRow(
-                  '得分',
-                  (detail?.score ?? '').isEmpty ? '—' : '${detail!.score} 分',
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      flex: 2,
+                      child: SizedBox(
+                        width: double.infinity,
+                        child: MiuixButton(
+                          onPressed: canAdd ? _confirm : null,
+                          colors: MiuixButtonDefaults.buttonColorsPrimary(
+                            context,
+                          ),
+                          minHeight: 48,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: const [
+                              MiuixIcon(
+                                icon: Icons.event_available_rounded,
+                                size: 18,
+                              ),
+                              SizedBox(width: 6),
+                              MiuixText('添加到日历'),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ],
-              const SizedBox(height: 6),
-              if (!_loading && !canAdd)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: Text(
-                    deadline == null ? '该作业没有可用的截止时间，无法添加到日历' : '作业已截止，无法添加到日历',
-                    style: const TextStyle(
-                      fontSize: 11.5,
-                      color: AppColors.muted,
-                    ),
-                  ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatusChip(MiuixThemeData theme) {
+    final homework = widget.homework;
+    final color = homework.isExpired
+        ? theme.colors.onSurfaceVariantSummary
+        : homework.isSubmitted
+        ? const Color(0xFF1F7A52)
+        : const Color(0xFFB26A00);
+    return MiuixSurface(
+      cornerRadius: 20,
+      color: color.withValues(alpha: 0.12),
+      contentColor: color,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        child: MiuixText(
+          homework.displayStatus,
+          style: theme.textStyles.footnote2.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+          color: color,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildError(MiuixThemeData theme) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: MiuixSurface(
+        cornerRadius: 10,
+        color: theme.colors.errorContainer,
+        contentColor: theme.colors.onErrorContainer,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              MiuixIcon(
+                icon: Icons.error_outline_rounded,
+                size: 15,
+                tint: theme.colors.onErrorContainer,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: MiuixText(
+                  _error!,
+                  style: theme.textStyles.footnote2.copyWith(height: 1.45),
+                  color: theme.colors.onErrorContainer,
                 ),
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      style: OutlinedButton.styleFrom(
-                        minimumSize: const Size.fromHeight(48),
-                        foregroundColor: AppColors.ink,
-                        side: const BorderSide(color: AppColors.line),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                      ),
-                      child: const Text('取消'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    flex: 2,
-                    child: FilledButton.icon(
-                      onPressed: canAdd ? _confirm : null,
-                      style: FilledButton.styleFrom(
-                        minimumSize: const Size.fromHeight(48),
-                      ),
-                      icon: const Icon(Icons.event_available_rounded, size: 18),
-                      label: const Text('添加到日历'),
-                    ),
-                  ),
-                ],
               ),
             ],
           ),
@@ -1318,63 +1590,7 @@ class _HomeworkDetailDialogState extends State<_HomeworkDetailDialog> {
     );
   }
 
-  Widget _buildStatusChip() {
-    final homework = widget.homework;
-    final color = homework.isExpired
-        ? AppColors.muted
-        : homework.isSubmitted
-        ? AppColors.success
-        : AppColors.pending;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Text(
-        homework.displayStatus,
-        style: TextStyle(
-          fontSize: 11.5,
-          fontWeight: FontWeight.w600,
-          color: color,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildError() {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-      decoration: BoxDecoration(
-        color: AppColors.danger.withValues(alpha: 0.07),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Icon(
-            Icons.error_outline_rounded,
-            size: 15,
-            color: AppColors.danger,
-          ),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              _error!,
-              style: const TextStyle(
-                fontSize: 12,
-                height: 1.45,
-                color: AppColors.danger,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _infoRow(String label, String value) {
+  Widget _infoRow(MiuixThemeData theme, String label, String value) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 10),
       child: Row(
@@ -1382,19 +1598,18 @@ class _HomeworkDetailDialogState extends State<_HomeworkDetailDialog> {
         children: [
           SizedBox(
             width: 66,
-            child: Text(
+            child: MiuixText(
               label,
-              style: const TextStyle(fontSize: 12.5, color: AppColors.muted),
+              style: theme.textStyles.footnote1,
+              color: theme.colors.onSurfaceVariantSummary,
             ),
           ),
           Expanded(
-            child: Text(
+            child: MiuixText(
               value,
-              style: const TextStyle(
-                fontSize: 13.5,
+              style: theme.textStyles.body2.copyWith(
                 height: 1.4,
                 fontWeight: FontWeight.w500,
-                color: AppColors.ink,
               ),
             ),
           ),

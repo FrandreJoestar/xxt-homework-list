@@ -1,8 +1,6 @@
-import 'package:flutter/cupertino.dart';
-import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:flutter_miuix/miuix.dart';
+import 'package:material_ui/material_ui.dart';
 
-import '../theme.dart';
 import '../utils/reminder_text.dart';
 
 /// 弹出提前提醒时间选择器，返回 null 表示取消。
@@ -34,9 +32,6 @@ class _ReminderPickerSheetState extends State<_ReminderPickerSheet> {
   late int _days;
   late int _hours;
   late int _minutes;
-  late final FixedExtentScrollController _daysController;
-  late final FixedExtentScrollController _hoursController;
-  late final FixedExtentScrollController _minutesController;
 
   int get _totalMinutes => _days * 1440 + _hours * 60 + _minutes;
 
@@ -47,27 +42,16 @@ class _ReminderPickerSheetState extends State<_ReminderPickerSheet> {
     _days = (total ~/ 1440).clamp(0, _maxDays).toInt();
     _hours = ((total % 1440) ~/ 60).clamp(0, 23).toInt();
     _minutes = (total % 60).clamp(0, 59).toInt();
-
-    _daysController = FixedExtentScrollController(initialItem: _days);
-    _hoursController = FixedExtentScrollController(initialItem: _hours);
-    _minutesController = FixedExtentScrollController(initialItem: _minutes);
-  }
-
-  @override
-  void dispose() {
-    _daysController.dispose();
-    _hoursController.dispose();
-    _minutesController.dispose();
-    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = MiuixTheme.of(context);
     final total = _totalMinutes;
     return Container(
-      decoration: const BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      decoration: BoxDecoration(
+        color: theme.colors.background,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
       ),
       child: SafeArea(
         top: false,
@@ -80,86 +64,107 @@ class _ReminderPickerSheetState extends State<_ReminderPickerSheet> {
                 width: 36,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: AppColors.line,
+                  color: theme.colors.dividerLine,
                   borderRadius: BorderRadius.circular(2),
                 ),
               ),
               const SizedBox(height: 14),
-              const Text(
+              MiuixText(
                 '提前提醒',
-                style: TextStyle(
-                  fontSize: 17,
+                style: theme.textStyles.title4.copyWith(
                   fontWeight: FontWeight.w700,
-                  color: AppColors.ink,
                 ),
               ),
               const SizedBox(height: 6),
-              Text(
+              MiuixText(
                 total > 0 ? '将在截止前 ${formatReminderLead(total)}提醒' : '请选择提醒时间',
-                style: TextStyle(
-                  fontSize: 13,
+                style: theme.textStyles.footnote1.copyWith(
                   fontWeight: FontWeight.w600,
-                  color: total > 0 ? AppColors.accent : AppColors.muted,
                 ),
+                color: total > 0
+                    ? theme.colors.primary
+                    : theme.colors.onSurfaceVariantSummary,
               ),
               const SizedBox(height: 8),
               SizedBox(
                 height: 176,
                 child: Row(
                   children: [
-                    _buildWheel(
-                      controller: _daysController,
-                      count: _maxDays + 1,
-                      unit: '天',
-                      onChanged: (value) => setState(() => _days = value),
+                    Expanded(
+                      child: MiuixNumberPicker(
+                        value: _days,
+                        min: 0,
+                        max: _maxDays,
+                        label: (value) => '$value 天',
+                        visibleItemCount: 3,
+                        itemHeight: 44,
+                        onValueChanged: (value) =>
+                            setState(() => _days = value),
+                      ),
                     ),
-                    _buildWheel(
-                      controller: _hoursController,
-                      count: 24,
-                      unit: '小时',
-                      onChanged: (value) => setState(() => _hours = value),
+                    Expanded(
+                      child: MiuixNumberPicker(
+                        value: _hours,
+                        min: 0,
+                        max: 23,
+                        label: (value) => '$value 小时',
+                        visibleItemCount: 3,
+                        itemHeight: 44,
+                        onValueChanged: (value) =>
+                            setState(() => _hours = value),
+                      ),
                     ),
-                    _buildWheel(
-                      controller: _minutesController,
-                      count: 60,
-                      unit: '分钟',
-                      onChanged: (value) => setState(() => _minutes = value),
+                    Expanded(
+                      child: MiuixNumberPicker(
+                        value: _minutes,
+                        min: 0,
+                        max: 59,
+                        label: (value) => '$value 分钟',
+                        visibleItemCount: 3,
+                        itemHeight: 44,
+                        onValueChanged: (value) =>
+                            setState(() => _minutes = value),
+                      ),
                     ),
                   ],
                 ),
               ),
               const SizedBox(height: 4),
-              const Text(
+              MiuixText(
                 '提醒时间 = 作业截止时间 − 提前量',
-                style: TextStyle(fontSize: 11.5, color: AppColors.muted),
+                style: theme.textStyles.footnote2,
+                color: theme.colors.onSurfaceVariantSummary,
               ),
               const SizedBox(height: 16),
               Row(
                 children: [
                   Expanded(
-                    child: OutlinedButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      style: OutlinedButton.styleFrom(
-                        minimumSize: const Size.fromHeight(50),
-                        foregroundColor: AppColors.ink,
-                        side: const BorderSide(color: AppColors.line),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: MiuixTextButton(
+                        '取消',
+                        onPressed: () => Navigator.of(context).pop(),
+                        minHeight: 50,
                       ),
-                      child: const Text('取消'),
                     ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
                     flex: 2,
-                    child: FilledButton(
-                      onPressed: total > 0
-                          ? () => Navigator.of(
-                              context,
-                            ).pop(Duration(minutes: total))
-                          : null,
-                      child: const Text('确定导入'),
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: MiuixButton(
+                        onPressed: total > 0
+                            ? () => Navigator.of(
+                                context,
+                              ).pop(Duration(minutes: total))
+                            : null,
+                        minHeight: 50,
+                        colors: MiuixButtonDefaults.buttonColorsPrimary(
+                          context,
+                        ),
+                        child: const MiuixText('确定导入'),
+                      ),
                     ),
                   ),
                 ],
@@ -167,45 +172,6 @@ class _ReminderPickerSheetState extends State<_ReminderPickerSheet> {
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _buildWheel({
-    required FixedExtentScrollController controller,
-    required int count,
-    required String unit,
-    required ValueChanged<int> onChanged,
-  }) {
-    return Expanded(
-      child: CupertinoPicker(
-        scrollController: controller,
-        itemExtent: 44,
-        diameterRatio: 1.8,
-        squeeze: 1,
-        onSelectedItemChanged: (index) {
-          HapticFeedback.selectionClick();
-          onChanged(index);
-        },
-        selectionOverlay: CupertinoPickerDefaultSelectionOverlay(
-          background: AppColors.accent.withValues(alpha: 0.07),
-          capStartEdge: false,
-          capEndEdge: false,
-        ),
-        children: [
-          for (var i = 0; i < count; i++)
-            Center(
-              child: Text(
-                '$i $unit',
-                style: const TextStyle(
-                  fontSize: 17,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.ink,
-                  fontFeatures: [FontFeature.tabularFigures()],
-                ),
-              ),
-            ),
-        ],
       ),
     );
   }
