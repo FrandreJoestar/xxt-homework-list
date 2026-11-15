@@ -479,7 +479,7 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       barrierLabel: '关闭作业详情',
       // 遮罩由 CardMorphTransition 自己绘制，随动画一起淡入淡出。
       barrierColor: Colors.transparent,
-      transitionDuration: const Duration(milliseconds: 320),
+      transitionDuration: const Duration(milliseconds: 240),
       pageBuilder: (context, animation, secondaryAnimation) =>
           _HomeworkDetailDialog(
             homework: homework,

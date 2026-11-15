@@ -25,7 +25,7 @@ void main() {
   testWidgets('卡片变形结束后按自然尺寸居中显示，并保留背景遮罩', (tester) async {
     final controller = AnimationController(
       vsync: const TestVSync(),
-      duration: const Duration(milliseconds: 320),
+      duration: const Duration(milliseconds: 240),
     );
     addTearDown(controller.dispose);
 
@@ -58,7 +58,7 @@ void main() {
   testWidgets('卡片变形反向收起不报错', (tester) async {
     final controller = AnimationController(
       vsync: const TestVSync(),
-      duration: const Duration(milliseconds: 320),
+      duration: const Duration(milliseconds: 240),
     );
     addTearDown(controller.dispose);
 
@@ -73,5 +73,52 @@ void main() {
       await tester.pump(const Duration(milliseconds: 50));
     }
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('点击遮罩区域关闭卡片', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: Builder(
+            builder: (context) => Center(
+              child: TextButton(
+                onPressed: () => showGeneralDialog<void>(
+                  context: context,
+                  barrierDismissible: true,
+                  barrierLabel: '关闭作业详情',
+                  barrierColor: Colors.transparent,
+                  transitionDuration: const Duration(milliseconds: 240),
+                  pageBuilder: (context, animation, secondaryAnimation) =>
+                      Container(
+                        width: 200,
+                        height: 200,
+                        color: const Color(0xFFFFFFFF),
+                      ),
+                  transitionBuilder:
+                      (context, animation, secondaryAnimation, child) =>
+                          CardMorphTransition(
+                            origin: const Rect.fromLTWH(100, 200, 200, 100),
+                            animation: animation,
+                            sourceColor: const Color(0xFFFFFFFF),
+                            targetColor: const Color(0xFFF5F6F7),
+                            child: child,
+                          ),
+                ),
+                child: const Text('打开'),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('打开'));
+    await tester.pumpAndSettle();
+    expect(find.byType(CardMorphTransition), findsOneWidget);
+
+    // 点击面板之外（左上角）应关闭弹窗
+    await tester.tapAt(const Offset(8, 8));
+    await tester.pumpAndSettle();
+    expect(find.byType(CardMorphTransition), findsNothing);
   });
 }

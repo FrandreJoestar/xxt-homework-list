@@ -20,7 +20,7 @@
 
 界面基于 [`flutter_miuix`](https://github.com/ChuxinNeko/flutter_miuix) 重写为 HyperOS 风格：底部悬浮分类 dock、列表滚动时顶栏与 dock 一起隐藏、点开作业时卡片本体变形为详情面板。
 
-当前版本：**v1.3.2**
+当前版本：**v1.3.3**
 
 ## 功能特性
 
@@ -208,8 +208,8 @@ gh release create v1.2.0 build/app/outputs/flutter-apk/app-release.apk \
 
 ```json
 {
-  "version": "1.3.2",
-  "build": 7,
+  "version": "1.3.3",
+  "build": 8,
   "apkUrl": "https://github.com/FrandreJoestar/xxt-homework-list/releases/latest/download/xxt-homework-list.apk",
   "apkUrls": {
     "arm64-v8a": "https://github.com/FrandreJoestar/xxt-homework-list/releases/latest/download/xxt-homework-list-arm64-v8a.apk",
@@ -265,6 +265,11 @@ gh release create v1.2.0 build/app/outputs/flutter-apk/app-release.apk \
 当前版本面向 Android，日历写入能力基于 Android `CalendarContract` 实现。
 
 ## 更新日志
+
+### v1.3.3
+
+- 详情变形动画提速：过渡时长 320ms → 240ms，卡片文字更早淡出、详情内容更早淡入
+- 修复点击遮罩无法关闭详情的问题：遮罩只负责绘制，改用独立透明手势层处理点击关闭，面板内部点击不会误关
 
 ### v1.3.2
 

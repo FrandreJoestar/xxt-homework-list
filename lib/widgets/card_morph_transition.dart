@@ -114,6 +114,12 @@ class _CardMorphTransitionState extends State<CardMorphTransition> {
     BoxShadow(color: Color(0x33000000), blurRadius: 26, offset: Offset(0, 12)),
   ];
 
+  /// 点击遮罩关闭；已经在收起过程中时忽略，避免连续点击把下层页面也弹掉。
+  void _dismiss() {
+    if (widget.animation.status == AnimationStatus.reverse) return;
+    Navigator.of(context).maybePop();
+  }
+
   @override
   Widget build(BuildContext context) {
     final screen = MediaQuery.sizeOf(context);
@@ -128,17 +134,33 @@ class _CardMorphTransitionState extends State<CardMorphTransition> {
         child: Opacity(opacity: 0, child: Center(child: panel)),
       );
     }
+
+    // 遮罩只负责绘制；点击关闭由单独的透明手势层处理。
+    final scrim = Positioned.fill(
+      child: IgnorePointer(child: ColoredBox(color: widget.scrimColor)),
+    );
+    final dismissible = Positioned.fill(
+      child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: _dismiss),
+    );
+
     if (!_morphing) {
       return Stack(
         children: [
-          Positioned.fill(child: ColoredBox(color: widget.scrimColor)),
+          scrim,
+          dismissible,
           Center(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(widget.targetCornerRadius),
-                boxShadow: _surfaceShadow,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () {},
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(
+                    widget.targetCornerRadius,
+                  ),
+                  boxShadow: _surfaceShadow,
+                ),
+                child: panel,
               ),
-              child: panel,
             ),
           ),
         ],
@@ -162,50 +184,61 @@ class _CardMorphTransitionState extends State<CardMorphTransition> {
             widget.cornerRadius +
             (widget.targetCornerRadius - widget.cornerRadius) * t;
         // 卡片内容先淡出，等变形接近结束再淡入面板内容。
-        final sourceOpacity = (1 - progress / 0.25).clamp(0.0, 1.0);
-        final contentOpacity = ((progress - 0.7) / 0.3).clamp(0.0, 1.0);
+        final sourceOpacity = (1 - progress / 0.22).clamp(0.0, 1.0);
+        final contentOpacity = ((progress - 0.62) / 0.38).clamp(0.0, 1.0);
         return Stack(
           children: [
             Positioned.fill(
-              child: ColoredBox(
-                color: Color.lerp(Colors.transparent, widget.scrimColor, t)!,
+              child: IgnorePointer(
+                child: ColoredBox(
+                  color: Color.lerp(Colors.transparent, widget.scrimColor, t)!,
+                ),
               ),
             ),
+            dismissible,
             Positioned.fromRect(
               rect: rect,
-              child: Container(
-                clipBehavior: Clip.antiAlias,
-                decoration: BoxDecoration(
-                  color: Color.lerp(widget.sourceColor, widget.targetColor, t),
-                  borderRadius: BorderRadius.circular(radius),
-                  boxShadow: _surfaceShadow,
-                ),
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    if (contentOpacity > 0)
-                      Center(
-                        child: Opacity(
-                          opacity: contentOpacity,
-                          child: SizedBox(
-                            width: size.width,
-                            height: size.height,
-                            child: widget.child,
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {},
+                child: Container(
+                  clipBehavior: Clip.antiAlias,
+                  decoration: BoxDecoration(
+                    color: Color.lerp(
+                      widget.sourceColor,
+                      widget.targetColor,
+                      t,
+                    ),
+                    borderRadius: BorderRadius.circular(radius),
+                    boxShadow: _surfaceShadow,
+                  ),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      if (contentOpacity > 0)
+                        Center(
+                          child: Opacity(
+                            opacity: contentOpacity,
+                            child: SizedBox(
+                              width: size.width,
+                              height: size.height,
+                              child: widget.child,
+                            ),
                           ),
                         ),
-                      ),
-                    if (source != null && origin != null && sourceOpacity > 0)
-                      Center(
-                        child: Opacity(
-                          opacity: sourceOpacity,
-                          child: SizedBox(
-                            width: origin.width,
-                            height: origin.height,
-                            child: source,
+                      if (source != null && origin != null && sourceOpacity > 0)
+                        Center(
+                          child: Opacity(
+                            opacity: sourceOpacity,
+                            child: SizedBox(
+                              width: origin.width,
+                              height: origin.height,
+                              child: source,
+                            ),
                           ),
                         ),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
