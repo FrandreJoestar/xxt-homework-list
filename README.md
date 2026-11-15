@@ -18,9 +18,9 @@
 
 学习通作业本会登录学习通账号，读取全部课程作业及截止时间，并按「全部 / 未交 / 已交 / 已截止」分类展示。点击作业卡片可查看题量、满分、作答时间与得分；长按卡片可多选，选择提前提醒时间后一键写入系统日历，在截止前收到提醒。
 
-界面基于 [`flutter_miuix`](https://github.com/ChuxinNeko/flutter_miuix) 重写为 HyperOS 风格：底部悬浮分类 dock、列表滚动时顶栏与 dock 一起隐藏、详情卡片从被点击的卡片位置展开。
+界面基于 [`flutter_miuix`](https://github.com/ChuxinNeko/flutter_miuix) 重写为 HyperOS 风格：底部悬浮分类 dock、列表滚动时顶栏与 dock 一起隐藏、点开作业时卡片本体变形为详情面板。
 
-当前版本：**v1.3.1**
+当前版本：**v1.3.2**
 
 ## 功能特性
 
@@ -28,7 +28,7 @@
 | --- | --- |
 | 账号 | 学习通手机号 / 密码登录，自动保存会话，Cookie 失效时自动重登 |
 | 作业 | 汇总全部课程的作业标题、课程、状态与截止时间 |
-| 详情 | 点击卡片弹出详情卡片：题量、满分、作答起止时间、得分，可直接添加到日历；弹窗从被点击的卡片上下展开，关闭时收回 |
+| 详情 | 点击卡片弹出详情卡片：题量、满分、作答起止时间、得分，可直接添加到日历；点击后卡片本体先淡出文字、变形为详情面板，完成后再显示内容，关闭时收回到卡片 |
 | 筛选 | 全部 / 未交 / 已交 / 已截止；「已交」不包含已截止的作业 |
 | 切换 | 底部分类 dock 点击切换，或在列表上左右滑动切换选项卡，页面跟随手指滑动并带过渡动画 |
 | dock | 半透明悬浮分类栏盖在列表之上，带背景模糊；长按后左右拖动可连续切换分类 |
@@ -208,8 +208,8 @@ gh release create v1.2.0 build/app/outputs/flutter-apk/app-release.apk \
 
 ```json
 {
-  "version": "1.3.1",
-  "build": 6,
+  "version": "1.3.2",
+  "build": 7,
   "apkUrl": "https://github.com/FrandreJoestar/xxt-homework-list/releases/latest/download/xxt-homework-list.apk",
   "apkUrls": {
     "arm64-v8a": "https://github.com/FrandreJoestar/xxt-homework-list/releases/latest/download/xxt-homework-list-arm64-v8a.apk",
@@ -265,6 +265,12 @@ gh release create v1.2.0 build/app/outputs/flutter-apk/app-release.apk \
 当前版本面向 Android，日历写入能力基于 Android `CalendarContract` 实现。
 
 ## 更新日志
+
+### v1.3.2
+
+- 详情展开动画改为「卡片本体变形」：直接复用列表里的卡片画面，先淡出文字，再把卡片的矩形、底色与圆角一起过渡到详情面板，接近完成时才淡入详情内容
+- 变形过程中叠加背景遮罩与阴影，卡片看起来悬浮在列表之上；关闭时沿原路径收回到卡片
+- 过渡时长调整为 320ms，遮罩由动画组件自行绘制，点击空白处仍可关闭
 
 ### v1.3.1
 

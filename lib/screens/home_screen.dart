@@ -471,13 +471,15 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   // ------------------------------------------------------------ 作业详情
 
   Future<void> _openDetail(Homework homework) async {
+    final theme = MiuixTheme.of(context);
     final origin = _cardRectOf(homework);
     final detail = await showGeneralDialog<HomeworkDetail>(
       context: context,
       barrierDismissible: true,
       barrierLabel: '关闭作业详情',
-      barrierColor: Colors.black54,
-      transitionDuration: const Duration(milliseconds: 280),
+      // 遮罩由 CardMorphTransition 自己绘制，随动画一起淡入淡出。
+      barrierColor: Colors.transparent,
+      transitionDuration: const Duration(milliseconds: 320),
       pageBuilder: (context, animation, secondaryAnimation) =>
           _HomeworkDetailDialog(
             homework: homework,
@@ -487,6 +489,14 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           CardMorphTransition(
             origin: origin,
             animation: animation,
+            // 源卡片就是列表里的那张卡片，变形开始时先淡出文字。
+            source: _HomeworkCard(
+              homework: homework,
+              selectionMode: false,
+              selected: false,
+            ),
+            sourceColor: theme.colors.surfaceContainer,
+            targetColor: theme.colors.background,
             child: child,
           ),
     );
