@@ -400,7 +400,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     if (!controller.hasClients) return;
     final media = MediaQuery.of(context);
     // 分类栏已移到底部 dock；多选拖拽时列表下方是导入栏。
-    final topEdge = media.padding.top + kToolbarHeight + 12;
+    final topEdge =
+        media.padding.top +
+        MiuixTopAppBarDefaults.smallTopAppBarCenterHeight +
+        12;
     final bottomEdge = media.size.height - media.padding.bottom - 110;
 
     double speed = 0;
@@ -596,9 +599,6 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     final theme = MiuixTheme.of(context);
-    final appBarHeight =
-        MediaQuery.paddingOf(context).top +
-        MiuixTopAppBarDefaults.smallTopAppBarCenterHeight;
     return PopScope(
       canPop: !_selectionMode,
       onPopInvokedWithResult: (didPop, result) {
@@ -612,25 +612,8 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           onNotification: _handleScrollNotification,
           child: Stack(
             children: [
-              // 顶栏藏起时列表同步向上长高，用真正的顶栏高度做内边距过渡。
-              ValueListenableBuilder<bool>(
-                valueListenable: _barsVisible,
-                builder: (context, visible, child) => AnimatedPadding(
-                  padding: EdgeInsets.only(top: visible ? appBarHeight : 0),
-                  duration: const Duration(milliseconds: 220),
-                  curve: Curves.easeOutCubic,
-                  child: child,
-                ),
-                child: _buildBody(theme),
-              ),
-              // 顶栏滑出后状态栏区域仍保留背景色，内容只在其下方滚过。
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                height: MediaQuery.paddingOf(context).top,
-                child: ColoredBox(color: theme.colors.surface),
-              ),
+              // 列表从顶栏下方开始，滚动时内容会从渐变顶栏下方穿过。
+              _buildBody(theme),
               Positioned(
                 left: 0,
                 right: 0,
@@ -669,16 +652,56 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
+  /// 顶栏：标题靠左，右侧是圆形悬浮按钮，背景为上实下透明向下的渐变。
   Widget _buildTopBar(MiuixThemeData theme) {
-    return MiuixSmallTopAppBar(
-      title: _selectionMode ? '已选 ${_selectedIds.length} 项' : '学习通作业本',
-      actions: _selectionMode
-          ? [
-              _buildSelectAction('全选', _selectAllInTab, theme),
-              _buildSelectAction('反选', _invertSelectionInTab, theme),
-              _buildSelectAction('取消', _exitSelection, theme),
-            ]
-          : _buildAppBarActions(context),
+    final topInset = MediaQuery.paddingOf(context).top;
+    final barHeight = MiuixTopAppBarDefaults.smallTopAppBarCenterHeight;
+    return SizedBox(
+      height: topInset + barHeight,
+      child: Stack(
+        children: [
+          // 渐变背景只负责绘制，不拦截列表的滚动与点击。
+          Positioned.fill(
+            child: IgnorePointer(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      theme.colors.background.withValues(alpha: 0.98),
+                      theme.colors.background.withValues(alpha: 0.82),
+                      theme.colors.background.withValues(alpha: 0),
+                    ],
+                    stops: const [0, 0.6, 1],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: EdgeInsets.only(top: topInset, left: 22, right: 14),
+            child: SizedBox(
+              height: barHeight,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: MiuixText(
+                      _selectionMode ? '已选 ${_selectedIds.length} 项' : '学习通作业本',
+                      style: theme.textStyles.title3,
+                      fontWeight: FontWeight.w500,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  ..._buildTopBarActions(theme),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -746,32 +769,70 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
     );
   }
 
-  List<Widget> _buildAppBarActions(BuildContext context) {
+  /// 普通状态右侧是两枚圆形悬浮按钮；多选状态换成文字操作。
+  List<Widget> _buildTopBarActions(MiuixThemeData theme) {
+    if (_selectionMode) {
+      return [
+        _buildSelectAction('全选', _selectAllInTab, theme),
+        _buildSelectAction('反选', _invertSelectionInTab, theme),
+        _buildSelectAction('取消', _exitSelection, theme),
+      ];
+    }
+    final circleColor = theme.colors.surface.withValues(alpha: 0.8);
     return [
-      // 有缓存时刷新中可点击取消；首次加载没有内容可看，只显示进度。
-      MiuixIconButton(
-        onPressed: _refreshing
-            ? (_items.isEmpty ? null : _cancelRefresh)
-            : _load,
-        child: _refreshing
-            ? (_items.isEmpty
-                  ? const MiuixCircularProgressIndicator(
-                      size: 18,
-                      strokeWidth: 2,
-                    )
-                  : const MiuixIcon(icon: Icons.close_rounded, size: 22))
-            : const MiuixIcon(icon: Icons.refresh_rounded, size: 22),
-      ),
-      MiuixOverlayIconDropdownMenu(
-        entry: MiuixDropdownEntry(
-          items: [
-            MiuixDropdownItem(text: '刷新作业', onClick: _load),
-            MiuixDropdownItem(text: '退出登录', onClick: widget.onLoggedOut),
-          ],
+      _buildFloatingCircle(
+        MiuixIconButton(
+          // 有缓存时刷新中可点击取消；首次加载没有内容可看，只显示进度。
+          onPressed: _refreshing
+              ? (_items.isEmpty ? null : _cancelRefresh)
+              : _load,
+          backgroundColor: circleColor,
+          child: _refreshing
+              ? (_items.isEmpty
+                    ? const MiuixCircularProgressIndicator(
+                        size: 18,
+                        strokeWidth: 2,
+                      )
+                    : const MiuixIcon(icon: Icons.close_rounded, size: 22))
+              : const MiuixIcon(icon: Icons.refresh_rounded, size: 22),
         ),
-        child: const MiuixIcon(icon: Icons.more_vert_rounded, size: 22),
+      ),
+      const SizedBox(width: 8),
+      _buildFloatingCircle(
+        MiuixOverlayIconDropdownMenu(
+          backgroundColor: circleColor,
+          entry: MiuixDropdownEntry(
+            items: [
+              MiuixDropdownItem(text: '刷新作业', onClick: _load),
+              MiuixDropdownItem(text: '退出登录', onClick: widget.onLoggedOut),
+            ],
+          ),
+          child: const MiuixIcon(icon: Icons.more_vert_rounded, size: 22),
+        ),
       ),
     ];
+  }
+
+  /// 给圆形按钮加投影与玻璃模糊，让它浮在列表内容之上。
+  Widget _buildFloatingCircle(Widget child) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.10),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: ClipOval(
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+          child: child,
+        ),
+      ),
+    );
   }
 
   Widget _buildSelectAction(
@@ -850,11 +911,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
           key: PageStorageKey<String>('homework-${filter.name}'),
           controller: _scrollControllerFor(filter),
           physics: const AlwaysScrollableScrollPhysics(),
-          // 顶部与顶栏的间距由外层内边距负责；底部留出悬浮 dock 与系统手势区，
-          // 这样最后一张卡片也能完整滚到 dock 上方。
+          // 顶部与顶栏的间距由列表内边距负责（顶栏是浮层）；底部留出悬浮
+          // dock 与系统手势区，这样最后一张卡片也能完整滚到 dock 上方。
           padding: EdgeInsets.fromLTRB(
             16,
-            12,
+            MediaQuery.paddingOf(context).top +
+                MiuixTopAppBarDefaults.smallTopAppBarCenterHeight +
+                12,
             16,
             24 + MediaQuery.paddingOf(context).bottom + 78,
           ),
