@@ -167,6 +167,10 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       } else if (delta < -6 && !_barsVisible.value) {
         _barsVisible.value = true;
       }
+    } else if (notification is OverscrollNotification &&
+        notification.metrics.extentBefore == 0) {
+      // 下拉刷新时把顶栏叫回来，刷新指示器才不会悬在半空。
+      _barsVisible.value = true;
     } else if (notification is ScrollEndNotification &&
         notification.metrics.pixels <= 0) {
       _barsVisible.value = true;
@@ -899,6 +903,13 @@ class _HomeScreenState extends State<HomeScreen> with TickerProviderStateMixin {
       },
       color: theme.colors.primary,
       refreshTexts: const ['下拉刷新', '松开刷新', '正在刷新…', '刷新完成'],
+      // 刷新指示器绘制在列表之上方，需要避开悬浮顶栏，否则会被顶栏遮住。
+      contentPadding: EdgeInsets.only(
+        top:
+            MediaQuery.paddingOf(context).top +
+            MiuixTopAppBarDefaults.smallTopAppBarCenterHeight +
+            8,
+      ),
       child: GestureDetector(
         behavior: HitTestBehavior.translucent,
         onTapUp: (details) => _handleTap(details.globalPosition),
